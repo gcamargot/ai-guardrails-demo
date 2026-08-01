@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/nahtao97/agent-tool-guardrails/internal/freebusy"
 	"github.com/nahtao97/agent-tool-guardrails/internal/meeting"
 	"github.com/nahtao97/agent-tool-guardrails/internal/outlook"
+	"github.com/nahtao97/agent-tool-guardrails/internal/smartlock"
 )
 
 type Subject string
@@ -22,7 +24,7 @@ type Capability string
 type ToolName string
 type PolicyOperation string
 type StationID string
-type LockDeviceID string
+type LockDeviceID = smartlock.DeviceID
 
 const (
 	coffeeStationStatusTool ToolName        = "coffee_station.get_status"
@@ -31,7 +33,7 @@ const (
 	reviewMeetingTool       ToolName        = "calendar.review_meeting_proposal"
 	approveMeetingTool      ToolName        = "calendar.approve_meeting_proposal"
 	denyMeetingTool         ToolName        = "calendar.deny_meeting_proposal"
-	unlockSmartLockTool     ToolName        = "smart_lock.unlock"
+	unlockSmartLockTool     ToolName        = smartlock.UnlockTool
 	searchOutlookTool       ToolName        = "outlook.search_messages"
 	readOutlookTool         ToolName        = "outlook.read_message"
 	discoverOperation       PolicyOperation = "discover"
@@ -89,6 +91,7 @@ type AuditRecord struct {
 
 type AuditSink interface {
 	Record(context.Context, AuditRecord) error
+	Health(context.Context) error
 }
 
 type PolicyClient interface {
@@ -136,14 +139,11 @@ type ApprovalConsumer interface {
 }
 
 type SmartLock interface {
-	Unlock(context.Context, LockDeviceID) (SmartLockState, error)
+	Unlock(context.Context, smartlock.DeviceID) (smartlock.State, error)
 	Health(context.Context) error
 }
 
-type SmartLockState struct {
-	DeviceID LockDeviceID `json:"device_id"`
-	State    string       `json:"state"`
-}
+type SmartLockState = smartlock.State
 
 type Dependencies struct {
 	Identity       IdentityVerifier
@@ -185,12 +185,9 @@ type approveMeetingInput struct {
 }
 
 type unlockSmartLockInput struct {
-	DeviceID LockDeviceID          `json:"device_id" jsonschema:"the fixed demo smart-lock identifier"`
+	DeviceID smartlock.DeviceID    `json:"device_id" jsonschema:"the fixed demo smart-lock identifier"`
+	TraceID  smartlock.TraceID     `json:"trace_id" jsonschema:"the trace shown during exact Owner review"`
 	Approval meeting.ApprovalToken `json:"approval" jsonschema:"short-lived exact Approval from the Approval Authority"`
-}
-
-type unlockSmartLockArguments struct {
-	DeviceID LockDeviceID `json:"device_id"`
 }
 
 type searchOutlookInput struct {
@@ -274,10 +271,14 @@ func newMCPServer(deps Dependencies, securityContext SecurityContext) *mcp.Serve
 					Tool:            ToolName(tool.Name),
 				})
 				if ToolName(tool.Name) == unlockSmartLockTool {
-					if decisionErr != nil || recordAudit(
+					auditErr := recordAudit(
 						ctx, deps.Audit, securityContext, discoverOperation, unlockSmartLockTool, decision, "",
 						decisionOutcome(decision, decisionErr), decisionReason(decision, decisionErr),
-					) != nil {
+					)
+					if auditErr != nil {
+						return nil, fmt.Errorf("record smart-lock discovery audit: %w", auditErr)
+					}
+					if decisionErr != nil {
 						continue
 					}
 				}
@@ -505,17 +506,21 @@ func newMCPServer(deps Dependencies, securityContext SecurityContext) *mcp.Serve
 		Name:        string(unlockSmartLockTool),
 		Description: "Unlock only the fixed simulated front-door lock after exact Owner Approval.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input unlockSmartLockInput) (*mcp.CallToolResult, SmartLockState, error) {
-		arguments := unlockSmartLockArguments{DeviceID: input.DeviceID}
+		arguments := smartlock.Arguments{DeviceID: input.DeviceID}
 		decision, err := deps.Policy.Decide(ctx, PolicyInput{
 			SecurityContext: securityContext, Operation: executeOperation, Tool: unlockSmartLockTool, Arguments: arguments,
 		})
 		if err != nil {
-			_ = recordAudit(ctx, deps.Audit, securityContext, executeOperation, unlockSmartLockTool, PolicyDecision{DecisionID: "unavailable"}, "", "deny", "policy_unavailable")
+			if auditErr := recordAudit(ctx, deps.Audit, securityContext, executeOperation, unlockSmartLockTool, PolicyDecision{DecisionID: "unavailable"}, "", "deny", "policy_unavailable"); auditErr != nil {
+				return nil, SmartLockState{}, errors.Join(err, auditErr)
+			}
 			return nil, SmartLockState{}, err
 		}
 		result := policyResult(decision)
 		if !decision.Allow {
-			_ = recordAudit(ctx, deps.Audit, securityContext, executeOperation, unlockSmartLockTool, decision, "", "deny", decision.Reason)
+			if err := recordAudit(ctx, deps.Audit, securityContext, executeOperation, unlockSmartLockTool, decision, "", "deny", decision.Reason); err != nil {
+				return nil, SmartLockState{}, fmt.Errorf("record denied smart-lock audit: %w", err)
+			}
 			result.SetError(errors.New("tool call denied by policy"))
 			return result, SmartLockState{}, nil
 		}
@@ -523,10 +528,17 @@ func newMCPServer(deps Dependencies, securityContext SecurityContext) *mcp.Serve
 			return nil, SmartLockState{}, errors.New("smart-lock dependencies are unavailable")
 		}
 		consumed, err := deps.Approvals.ConsumeExact(ctx, string(input.Approval), approvalauthority.Binding{
-			Subject: string(securityContext.Subject), Actor: string(securityContext.Actor), Tool: string(unlockSmartLockTool), Arguments: arguments,
+			Subject: string(securityContext.Subject), Actor: string(securityContext.Actor), Tool: string(unlockSmartLockTool),
+			Arguments: arguments, TraceID: string(input.TraceID),
 		})
 		if err != nil {
-			_ = recordAudit(ctx, deps.Audit, securityContext, executeOperation, unlockSmartLockTool, decision, consumed.TraceID, "deny", "exact_approval_denied")
+			traceID := consumed.TraceID
+			if traceID == "" {
+				traceID = string(input.TraceID)
+			}
+			if auditErr := recordAudit(ctx, deps.Audit, securityContext, executeOperation, unlockSmartLockTool, decision, traceID, "deny", "exact_approval_denied"); auditErr != nil {
+				return nil, SmartLockState{}, errors.Join(err, auditErr)
+			}
 			result.SetError(errors.New("exact Approval denied"))
 			return result, SmartLockState{}, nil
 		}
@@ -538,7 +550,7 @@ func newMCPServer(deps Dependencies, securityContext SecurityContext) *mcp.Serve
 		if err != nil {
 			return nil, SmartLockState{}, err
 		}
-		if state.DeviceID != input.DeviceID || state.State != "unlocked" {
+		if state.DeviceID != input.DeviceID || state.State != smartlock.StateUnlocked {
 			result.SetError(errors.New("smart-lock adapter returned invalid state"))
 			return result, SmartLockState{}, nil
 		}
@@ -719,6 +731,24 @@ func healthHandler(deps Dependencies) http.HandlerFunc {
 				response.WriteHeader(http.StatusServiceUnavailable)
 				_ = json.NewEncoder(response).Encode(map[string]string{
 					"status": "unavailable", "policy": "ready", "resource": "unavailable",
+				})
+				return
+			}
+		}
+		if deps.Approvals != nil {
+			if err := deps.Approvals.Health(request.Context()); err != nil {
+				response.WriteHeader(http.StatusServiceUnavailable)
+				_ = json.NewEncoder(response).Encode(map[string]string{
+					"status": "unavailable", "policy": "ready", "approval": "unavailable",
+				})
+				return
+			}
+		}
+		if deps.Audit != nil {
+			if err := deps.Audit.Health(request.Context()); err != nil {
+				response.WriteHeader(http.StatusServiceUnavailable)
+				_ = json.NewEncoder(response).Encode(map[string]string{
+					"status": "unavailable", "policy": "ready", "audit": "unavailable",
 				})
 				return
 			}

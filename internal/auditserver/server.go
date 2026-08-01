@@ -23,7 +23,7 @@ func NewHandler() http.Handler {
 		var record gateway.AuditRecord
 		decoder := json.NewDecoder(io.LimitReader(request.Body, 1<<20))
 		decoder.DisallowUnknownFields()
-		if decoder.Decode(&record) != nil || !valid(record) {
+		if decoder.Decode(&record) != nil || decoder.Decode(&struct{}{}) != io.EOF || !valid(record) {
 			http.Error(response, "invalid audit record", http.StatusBadRequest)
 			return
 		}

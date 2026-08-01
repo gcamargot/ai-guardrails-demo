@@ -98,19 +98,19 @@ func runSmartLockFlow(ctx context.Context, tokenEndpoint, generalGatewayEndpoint
 
 	expiring := reviewSmartLock(ctx, webhookEndpoint)
 	time.Sleep(6 * time.Second)
-	expired := telegramCommand(ctx, webhookEndpoint, 9001, "/unlock demo-front-door "+expiring.Approval, http.StatusBadGateway)
+	expired := telegramCommand(ctx, webhookEndpoint, 9001, "/unlock demo-front-door "+expiring.TraceID+" "+expiring.Approval, http.StatusBadGateway)
 	expired.Body.Close()
 
 	operation := reviewSmartLock(ctx, webhookEndpoint)
 	session := connectMCP(ctx, telegramGatewayEndpoint, owner)
 	mismatch, err := session.CallTool(ctx, &mcp.CallToolParams{
-		Name: "smart_lock.unlock", Arguments: map[string]any{"device_id": "garage-door", "approval": operation.Approval},
+		Name: "smart_lock.unlock", Arguments: map[string]any{"device_id": "garage-door", "trace_id": operation.TraceID, "approval": operation.Approval},
 	})
 	_ = session.Close()
 	if err != nil || !mismatch.IsError {
 		log.Fatalf("changed smart-lock arguments were not denied: result=%#v err=%v", mismatch, err)
 	}
-	unlocked := telegramCommand(ctx, webhookEndpoint, 9001, "/unlock demo-front-door "+operation.Approval, http.StatusOK)
+	unlocked := telegramCommand(ctx, webhookEndpoint, 9001, "/unlock demo-front-door "+operation.TraceID+" "+operation.Approval, http.StatusOK)
 	var state struct {
 		DeviceID string `json:"device_id"`
 		State    string `json:"state"`
@@ -119,7 +119,7 @@ func runSmartLockFlow(ctx context.Context, tokenEndpoint, generalGatewayEndpoint
 	if state.DeviceID != "demo-front-door" || state.State != "unlocked" {
 		log.Fatalf("unexpected smart-lock state: %#v", state)
 	}
-	replay := telegramCommand(ctx, webhookEndpoint, 9001, "/unlock demo-front-door "+operation.Approval, http.StatusBadGateway)
+	replay := telegramCommand(ctx, webhookEndpoint, 9001, "/unlock demo-front-door "+operation.TraceID+" "+operation.Approval, http.StatusBadGateway)
 	replay.Body.Close()
 	if count := smartLockUnlockCount(ctx, metricsEndpoint); count != 1 {
 		log.Fatalf("smart-lock unlock_count = %d, want 1", count)
@@ -163,7 +163,7 @@ func verifySmartLockAccess(ctx context.Context, endpoint, token string, wantDisc
 	}
 	if !wantDiscovery {
 		result, err := session.CallTool(ctx, &mcp.CallToolParams{
-			Name: "smart_lock.unlock", Arguments: map[string]any{"device_id": "demo-front-door", "approval": "untrusted-approval"},
+			Name: "smart_lock.unlock", Arguments: map[string]any{"device_id": "demo-front-door", "trace_id": "untrusted-trace", "approval": "untrusted-approval"},
 		})
 		if err != nil || !result.IsError {
 			log.Fatalf("unauthorized smart-lock Tool Call was not denied: result=%#v err=%v", result, err)

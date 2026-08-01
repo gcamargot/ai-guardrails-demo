@@ -152,9 +152,10 @@ func (service *authority) consume(response http.ResponseWriter, request *http.Re
 		http.Error(response, "Approval denied", http.StatusForbidden)
 		return
 	}
+	response.Header().Set("X-Approval-Trace-ID", approved.TraceID)
 	argumentHash, err := hashArguments(input.Binding.Arguments)
 	if err != nil || approved.Subject != input.Binding.Subject || approved.Actor != input.Binding.Actor ||
-		approved.Tool != input.Binding.Tool || (input.Binding.TraceID != "" && approved.TraceID != input.Binding.TraceID) ||
+		approved.Tool != input.Binding.Tool || approved.TraceID != input.Binding.TraceID ||
 		approved.ArgumentsHash != argumentHash || !service.config.Now().Before(time.Unix(approved.ExpiresAt, 0)) {
 		http.Error(response, "Approval denied", http.StatusForbidden)
 		return
@@ -175,7 +176,6 @@ func (service *authority) consume(response http.ResponseWriter, request *http.Re
 		return
 	}
 	service.used[approved.Nonce] = struct{}{}
-	response.Header().Set("X-Approval-Trace-ID", approved.TraceID)
 	response.WriteHeader(http.StatusNoContent)
 }
 

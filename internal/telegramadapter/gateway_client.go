@@ -16,6 +16,7 @@ import (
 	"github.com/nahtao97/agent-tool-guardrails/internal/meeting"
 	"github.com/nahtao97/agent-tool-guardrails/internal/oidcclient"
 	"github.com/nahtao97/agent-tool-guardrails/internal/outlook"
+	"github.com/nahtao97/agent-tool-guardrails/internal/smartlock"
 	"golang.org/x/oauth2"
 )
 
@@ -179,7 +180,7 @@ func (client *GatewayClient) DenyProposal(ctx context.Context, identity TrustedT
 }
 
 func (client *GatewayClient) ReviewUnlock(ctx context.Context, identity TrustedTelegramIdentity, deviceID SmartLockDeviceID) (SmartLockOperation, error) {
-	if identity.Subject != client.config.OwnerSubject || deviceID != "demo-front-door" || client.config.Approvals == nil {
+	if identity.Subject != client.config.OwnerSubject || deviceID != smartlock.DemoDeviceID || client.config.Approvals == nil {
 		return SmartLockOperation{}, errors.New("only the Owner can review the fixed smart-lock operation")
 	}
 	session, err := client.connectWithScopes(ctx, identity, []string{"smart_lock.write"})
@@ -203,21 +204,21 @@ func (client *GatewayClient) ReviewUnlock(ctx context.Context, identity TrustedT
 		return SmartLockOperation{}, fmt.Errorf("create smart-lock trace: %w", err)
 	}
 	operation := SmartLockOperation{
-		Tool: "smart_lock.unlock", Arguments: SmartLockArguments{DeviceID: deviceID}, TraceID: "smart-lock-trace-" + hex.EncodeToString(traceBytes),
+		Tool: smartlock.UnlockTool, Arguments: smartlock.Arguments{DeviceID: deviceID}, TraceID: smartlock.TraceID("smart-lock-trace-" + hex.EncodeToString(traceBytes)),
 	}
 	approval, err := client.config.Approvals.Issue(ctx, approvalauthority.Binding{
 		Subject: string(identity.Subject), Actor: string(identity.Actor), Tool: operation.Tool,
-		Arguments: operation.Arguments, TraceID: operation.TraceID,
+		Arguments: operation.Arguments, TraceID: string(operation.TraceID),
 	})
 	if err != nil {
 		return SmartLockOperation{}, fmt.Errorf("issue exact smart-lock Approval: %w", err)
 	}
-	operation.Approval = meeting.ApprovalToken(approval)
+	operation.Approval = approval
 	return operation, nil
 }
 
-func (client *GatewayClient) Unlock(ctx context.Context, identity TrustedTelegramIdentity, deviceID SmartLockDeviceID, approval meeting.ApprovalToken) (SmartLockState, error) {
-	if identity.Subject != client.config.OwnerSubject || deviceID != "demo-front-door" || approval == "" {
+func (client *GatewayClient) Unlock(ctx context.Context, identity TrustedTelegramIdentity, deviceID SmartLockDeviceID, traceID smartlock.TraceID, approval string) (SmartLockState, error) {
+	if identity.Subject != client.config.OwnerSubject || deviceID != smartlock.DemoDeviceID || traceID == "" || approval == "" {
 		return SmartLockState{}, errors.New("only the Owner can unlock the fixed demo smart lock")
 	}
 	session, err := client.connectWithScopes(ctx, identity, []string{"smart_lock.write"})
@@ -226,7 +227,7 @@ func (client *GatewayClient) Unlock(ctx context.Context, identity TrustedTelegra
 	}
 	defer session.Close()
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{
-		Name: "smart_lock.unlock", Arguments: map[string]any{"device_id": deviceID, "approval": string(approval)},
+		Name: smartlock.UnlockTool, Arguments: map[string]any{"device_id": deviceID, "trace_id": traceID, "approval": approval},
 	})
 	if err != nil || result.IsError {
 		return SmartLockState{}, toolError("unlock smart lock", result, err)
@@ -235,7 +236,7 @@ func (client *GatewayClient) Unlock(ctx context.Context, identity TrustedTelegra
 	if err := decodeStructured(result.StructuredContent, &state); err != nil {
 		return SmartLockState{}, err
 	}
-	if state.DeviceID != deviceID || state.State != "unlocked" {
+	if state.DeviceID != deviceID || state.State != smartlock.StateUnlocked {
 		return SmartLockState{}, errors.New("gateway returned invalid smart-lock state")
 	}
 	return state, nil

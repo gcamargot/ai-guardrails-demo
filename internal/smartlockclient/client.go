@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/nahtao97/agent-tool-guardrails/internal/gateway"
+	"github.com/nahtao97/agent-tool-guardrails/internal/smartlock"
 )
 
 type Client struct {
@@ -22,30 +22,30 @@ func New(baseURL, credential string, httpClient *http.Client) *Client {
 	return &Client{baseURL: strings.TrimRight(baseURL, "/"), credential: credential, httpClient: httpClient}
 }
 
-func (client *Client) Unlock(ctx context.Context, deviceID gateway.LockDeviceID) (gateway.SmartLockState, error) {
-	body, err := json.Marshal(map[string]gateway.LockDeviceID{"device_id": deviceID})
+func (client *Client) Unlock(ctx context.Context, deviceID smartlock.DeviceID) (smartlock.State, error) {
+	body, err := json.Marshal(smartlock.Arguments{DeviceID: deviceID})
 	if err != nil {
-		return gateway.SmartLockState{}, fmt.Errorf("encode smart-lock request: %w", err)
+		return smartlock.State{}, fmt.Errorf("encode smart-lock request: %w", err)
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, client.baseURL+"/unlock", bytes.NewReader(body))
 	if err != nil {
-		return gateway.SmartLockState{}, fmt.Errorf("create smart-lock request: %w", err)
+		return smartlock.State{}, fmt.Errorf("create smart-lock request: %w", err)
 	}
 	request.Header.Set("Authorization", "Bearer "+client.credential)
 	request.Header.Set("Content-Type", "application/json")
 	response, err := client.httpClient.Do(request)
 	if err != nil {
-		return gateway.SmartLockState{}, fmt.Errorf("unlock smart lock: %w", err)
+		return smartlock.State{}, fmt.Errorf("unlock smart lock: %w", err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return gateway.SmartLockState{}, fmt.Errorf("smart-lock adapter returned HTTP %d", response.StatusCode)
+		return smartlock.State{}, fmt.Errorf("smart-lock adapter returned HTTP %d", response.StatusCode)
 	}
-	var state gateway.SmartLockState
+	var state smartlock.State
 	decoder := json.NewDecoder(io.LimitReader(response.Body, 1<<20))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&state); err != nil || state.DeviceID != deviceID || state.State != "unlocked" {
-		return gateway.SmartLockState{}, fmt.Errorf("smart-lock adapter returned invalid state")
+	if err := decoder.Decode(&state); err != nil || decoder.Decode(&struct{}{}) != io.EOF || state.DeviceID != deviceID || state.State != smartlock.StateUnlocked {
+		return smartlock.State{}, fmt.Errorf("smart-lock adapter returned invalid state")
 	}
 	return state, nil
 }

@@ -6,9 +6,9 @@ import (
 	"io"
 	"net/http"
 	"sync"
-)
 
-const demoDeviceID = "demo-front-door"
+	"github.com/nahtao97/agent-tool-guardrails/internal/smartlock"
+)
 
 func NewHandler(expectedCredential string) http.Handler {
 	var state struct {
@@ -35,12 +35,10 @@ func NewHandler(expectedCredential string) http.Handler {
 			http.Error(response, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		var input struct {
-			DeviceID string `json:"device_id"`
-		}
+		var input smartlock.Arguments
 		decoder := json.NewDecoder(io.LimitReader(request.Body, 1<<20))
 		decoder.DisallowUnknownFields()
-		if decoder.Decode(&input) != nil || input.DeviceID != demoDeviceID {
+		if decoder.Decode(&input) != nil || decoder.Decode(&struct{}{}) != io.EOF || input.DeviceID != smartlock.DemoDeviceID {
 			http.Error(response, "invalid smart-lock transition", http.StatusBadRequest)
 			return
 		}
@@ -53,10 +51,7 @@ func NewHandler(expectedCredential string) http.Handler {
 		state.unlocked = true
 		state.unlockCount++
 		response.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(response).Encode(struct {
-			DeviceID string `json:"device_id"`
-			State    string `json:"state"`
-		}{DeviceID: demoDeviceID, State: "unlocked"})
+		_ = json.NewEncoder(response).Encode(smartlock.State{DeviceID: smartlock.DemoDeviceID, State: smartlock.StateUnlocked})
 	})
 	return mux
 }

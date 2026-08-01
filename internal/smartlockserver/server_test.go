@@ -13,6 +13,12 @@ import (
 func TestAdapterUnlocksOnlyFixedDemoDeviceOnce(t *testing.T) {
 	server := httptest.NewServer(smartlockserver.NewHandler("trusted-lock-credential"))
 	t.Cleanup(server.Close)
+	trailing := rawUnlock(t, server.URL, `{"device_id":"demo-front-door"}{"device_id":"demo-front-door"}`, "trusted-lock-credential")
+	if trailing.StatusCode != http.StatusBadRequest {
+		trailing.Body.Close()
+		t.Fatalf("trailing JSON status = %d, want %d", trailing.StatusCode, http.StatusBadRequest)
+	}
+	trailing.Body.Close()
 
 	first := unlock(t, server.URL, "demo-front-door", "trusted-lock-credential")
 	defer first.Body.Close()
@@ -62,7 +68,12 @@ func TestAdapterUnlocksOnlyFixedDemoDeviceOnce(t *testing.T) {
 func unlock(t *testing.T, serverURL, deviceID, credential string) *http.Response {
 	t.Helper()
 	body, _ := json.Marshal(map[string]string{"device_id": deviceID})
-	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, serverURL+"/unlock", bytes.NewReader(body))
+	return rawUnlock(t, serverURL, string(body), credential)
+}
+
+func rawUnlock(t *testing.T, serverURL, body, credential string) *http.Response {
+	t.Helper()
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, serverURL+"/unlock", bytes.NewBufferString(body))
 	if err != nil {
 		t.Fatalf("create unlock request: %v", err)
 	}

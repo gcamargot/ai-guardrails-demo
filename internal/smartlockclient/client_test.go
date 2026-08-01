@@ -24,3 +24,15 @@ func TestClientRejectsAdapterStateThatDoesNotMatchRequestedDevice(t *testing.T) 
 		t.Fatal("mismatched adapter state was accepted")
 	}
 }
+
+func TestClientRejectsTrailingAdapterJSON(t *testing.T) {
+	adapter := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		_, _ = response.Write([]byte(`{"device_id":"demo-front-door","state":"unlocked"}{}`))
+	}))
+	t.Cleanup(adapter.Close)
+	client := smartlockclient.New(adapter.URL, "trusted-lock-credential", adapter.Client())
+	if _, err := client.Unlock(t.Context(), gateway.LockDeviceID("demo-front-door")); err == nil {
+		t.Fatal("trailing adapter JSON was accepted")
+	}
+}

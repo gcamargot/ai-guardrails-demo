@@ -13,6 +13,7 @@ import (
 	"github.com/nahtao97/agent-tool-guardrails/internal/freebusy"
 	"github.com/nahtao97/agent-tool-guardrails/internal/meeting"
 	"github.com/nahtao97/agent-tool-guardrails/internal/outlook"
+	"github.com/nahtao97/agent-tool-guardrails/internal/smartlock"
 )
 
 type TelegramUserID int64
@@ -33,23 +34,10 @@ type OutlookQuery = outlook.Query
 type OutlookSearchQuery = outlook.SearchQuery
 type OutlookSearchResult = outlook.SearchResult
 type OutlookMessageView = outlook.MessageView
-type SmartLockDeviceID string
-
-type SmartLockArguments struct {
-	DeviceID SmartLockDeviceID `json:"device_id"`
-}
-
-type SmartLockOperation struct {
-	Tool      string                `json:"tool"`
-	Arguments SmartLockArguments    `json:"arguments"`
-	TraceID   string                `json:"trace_id"`
-	Approval  meeting.ApprovalToken `json:"approval"`
-}
-
-type SmartLockState struct {
-	DeviceID SmartLockDeviceID `json:"device_id"`
-	State    string            `json:"state"`
-}
+type SmartLockDeviceID = smartlock.DeviceID
+type SmartLockArguments = smartlock.Arguments
+type SmartLockOperation = smartlock.Operation
+type SmartLockState = smartlock.State
 
 type AvailabilityGateway interface {
 	FindAvailability(context.Context, TrustedTelegramIdentity, AvailabilityQuery) ([]AvailableInterval, error)
@@ -69,7 +57,7 @@ type OutlookGateway interface {
 
 type SmartLockGateway interface {
 	ReviewUnlock(context.Context, TrustedTelegramIdentity, SmartLockDeviceID) (SmartLockOperation, error)
-	Unlock(context.Context, TrustedTelegramIdentity, SmartLockDeviceID, meeting.ApprovalToken) (SmartLockState, error)
+	Unlock(context.Context, TrustedTelegramIdentity, SmartLockDeviceID, smartlock.TraceID, string) (SmartLockState, error)
 }
 
 type Config struct {
@@ -184,7 +172,7 @@ func (router commandRouter) handleSmartLock(response http.ResponseWriter, reques
 		return
 	}
 	parts := strings.Fields(command)
-	if (parts[0] == "/review-unlock" && len(parts) != 2) || (parts[0] == "/unlock" && len(parts) != 3) {
+	if (parts[0] == "/review-unlock" && len(parts) != 2) || (parts[0] == "/unlock" && len(parts) != 4) {
 		http.Error(response, "review the exact smart-lock operation before unlocking", http.StatusBadRequest)
 		return
 	}
@@ -199,7 +187,7 @@ func (router commandRouter) handleSmartLock(response http.ResponseWriter, reques
 		_ = json.NewEncoder(response).Encode(operation)
 		return
 	}
-	state, err := router.config.SmartLock.Unlock(request.Context(), identity, deviceID, meeting.ApprovalToken(parts[2]))
+	state, err := router.config.SmartLock.Unlock(request.Context(), identity, deviceID, smartlock.TraceID(parts[2]), parts[3])
 	if err != nil {
 		http.Error(response, "smart-lock unlock failed", http.StatusBadGateway)
 		return

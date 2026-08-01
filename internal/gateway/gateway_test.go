@@ -32,6 +32,9 @@ func connectGateway(t *testing.T, dependencies gateway.Dependencies) *mcp.Client
 	if dependencies.Channel == "" {
 		dependencies.Channel = "streamable-http"
 	}
+	if dependencies.Audit == nil {
+		dependencies.Audit = &capturingAudit{}
+	}
 
 	server := httptest.NewServer(gateway.NewHandler(dependencies))
 	t.Cleanup(server.Close)
@@ -558,7 +561,13 @@ func TestOwnerTelegramTurnWithExactApprovalUnlocksFixedDemoLockOnce(t *testing.T
 		Channel:  "telegram", Policy: smartLockPolicy{}, CoffeeStation: readyCoffeeStation{}, Approvals: consumer, SmartLock: lock, Audit: audit,
 	})
 	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
-		Name: "smart_lock.unlock", Arguments: map[string]any{"device_id": "demo-front-door", "approval": approval},
+		Name: "smart_lock.unlock", Arguments: map[string]any{"device_id": "demo-front-door", "trace_id": "changed-trace", "approval": approval},
+	})
+	if err != nil || !result.IsError || lock.effects != 0 {
+		t.Fatalf("trace-mismatched Approval: result=%#v err=%v effects=%d", result, err, lock.effects)
+	}
+	result, err = session.CallTool(t.Context(), &mcp.CallToolParams{
+		Name: "smart_lock.unlock", Arguments: map[string]any{"device_id": "demo-front-door", "trace_id": "smart-lock-trace-1", "approval": approval},
 	})
 	if err != nil || result.IsError {
 		t.Fatalf("unlock fixed demo lock: result=%#v err=%v", result, err)
@@ -566,6 +575,42 @@ func TestOwnerTelegramTurnWithExactApprovalUnlocksFixedDemoLockOnce(t *testing.T
 	output, ok := result.StructuredContent.(map[string]any)
 	if !ok || output["device_id"] != "demo-front-door" || output["state"] != "unlocked" || lock.effects != 1 {
 		t.Fatalf("smart-lock result=%#v effects=%d", result.StructuredContent, lock.effects)
+	}
+}
+
+func TestSmartLockFailsClosedBeforeEffectWhenAuditIsUnavailable(t *testing.T) {
+	authorityServer := httptest.NewServer(approvalauthority.NewHandler(approvalauthority.Config{
+		SigningKey: []byte("test-signing-key-with-at-least-32-bytes"), IssuerCredential: "trusted-issuer-credential",
+		ConsumerCredential: "trusted-consumer-credential", OwnerSubject: "owner-subject-id", TTL: time.Minute,
+		StateFile: t.TempDir() + "/nonces",
+	}))
+	t.Cleanup(authorityServer.Close)
+	issuer := approvalauthority.NewClient(authorityServer.URL, "trusted-issuer-credential", authorityServer.Client())
+	consumer := approvalauthority.NewClient(authorityServer.URL, "trusted-consumer-credential", authorityServer.Client())
+	binding := approvalauthority.Binding{
+		Subject: "owner-subject-id", Actor: "telegram-agent", Tool: "smart_lock.unlock",
+		Arguments: map[string]any{"device_id": "demo-front-door"}, TraceID: "smart-lock-trace-audit-down",
+	}
+	approval, err := issuer.Issue(t.Context(), binding)
+	if err != nil {
+		t.Fatalf("issue Approval: %v", err)
+	}
+	lock := &countingSmartLock{}
+	session := connectGateway(t, gateway.Dependencies{
+		Identity: fixedIdentity{Subject: "owner-subject-id", Actor: "telegram-agent", TurnCapabilities: []gateway.Capability{"smart_lock.write"}},
+		Channel:  "telegram", Policy: smartLockPolicy{}, CoffeeStation: readyCoffeeStation{}, Approvals: consumer,
+		SmartLock: lock, Audit: unavailableAudit{},
+	})
+	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+		Name: "smart_lock.unlock", Arguments: map[string]any{
+			"device_id": "demo-front-door", "trace_id": "smart-lock-trace-audit-down", "approval": approval,
+		},
+	})
+	if err == nil && !result.IsError {
+		t.Fatal("smart-lock call succeeded without durable audit")
+	}
+	if lock.effects != 0 {
+		t.Fatalf("audit-unavailable call produced %d Effects", lock.effects)
 	}
 }
 
@@ -603,7 +648,7 @@ func TestUnauthorizedContextsCannotDiscoverOrReachSmartLockDependencies(t *testi
 				t.Fatalf("smart_lock.unlock discovery = %v, want %v", found, test.discovers)
 			}
 			result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
-				Name: "smart_lock.unlock", Arguments: map[string]any{"device_id": test.deviceID, "approval": "must-not-be-consumed"},
+				Name: "smart_lock.unlock", Arguments: map[string]any{"device_id": test.deviceID, "trace_id": "untrusted-trace", "approval": "must-not-be-consumed"},
 			})
 			if err != nil {
 				t.Fatalf("call denied smart-lock Tool: %v", err)
@@ -645,7 +690,7 @@ func TestSmartLockAllowAndApprovalDenyProduceCorrelatedNonSensitiveAudit(t *test
 	}
 	call := func() *mcp.CallToolResult {
 		result, callErr := session.CallTool(t.Context(), &mcp.CallToolParams{
-			Name: "smart_lock.unlock", Arguments: map[string]any{"device_id": "demo-front-door", "approval": approval},
+			Name: "smart_lock.unlock", Arguments: map[string]any{"device_id": "demo-front-door", "trace_id": "smart-lock-trace-audit", "approval": approval},
 		})
 		if callErr != nil {
 			t.Fatalf("call smart-lock Tool: %v", callErr)
@@ -874,6 +919,36 @@ func TestHealthReportsUnavailableWhenProtectedResourceCannotBeReached(t *testing
 	}
 }
 
+func TestHealthReportsUnavailableWhenApprovalOrAuditCannotBeReached(t *testing.T) {
+	tests := []struct {
+		name      string
+		approvals gateway.ApprovalConsumer
+		audit     gateway.AuditSink
+		field     string
+	}{
+		{name: "Approval Authority", approvals: unavailableApprovalConsumer{}, audit: &capturingAudit{}, field: "approval"},
+		{name: "audit collector", approvals: healthyApprovalConsumer{}, audit: unavailableAudit{}, field: "audit"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(gateway.NewHandler(gateway.Dependencies{
+				Policy: allowPolicy{}, CoffeeStation: readyCoffeeStation{}, Approvals: test.approvals, Audit: test.audit,
+			}))
+			t.Cleanup(server.Close)
+			response, err := http.Get(server.URL + "/healthz")
+			if err != nil {
+				t.Fatalf("get gateway health: %v", err)
+			}
+			defer response.Body.Close()
+			var body map[string]string
+			_ = json.NewDecoder(response.Body).Decode(&body)
+			if response.StatusCode != http.StatusServiceUnavailable || body[test.field] != "unavailable" {
+				t.Fatalf("health status=%d body=%#v", response.StatusCode, body)
+			}
+		})
+	}
+}
+
 type allowPolicy struct{}
 
 func (allowPolicy) Decide(context.Context, gateway.PolicyInput) (gateway.PolicyDecision, error) {
@@ -1055,6 +1130,30 @@ type capturingAudit struct {
 func (audit *capturingAudit) Record(_ context.Context, record gateway.AuditRecord) error {
 	audit.records = append(audit.records, record)
 	return nil
+}
+
+func (*capturingAudit) Health(context.Context) error { return nil }
+
+type unavailableAudit struct{}
+
+func (unavailableAudit) Record(context.Context, gateway.AuditRecord) error {
+	return errors.New("audit unavailable")
+}
+
+func (unavailableAudit) Health(context.Context) error { return errors.New("audit unavailable") }
+
+type healthyApprovalConsumer struct{}
+
+func (healthyApprovalConsumer) ConsumeExact(context.Context, string, approvalauthority.Binding) (approvalauthority.Consumption, error) {
+	return approvalauthority.Consumption{}, nil
+}
+
+func (healthyApprovalConsumer) Health(context.Context) error { return nil }
+
+type unavailableApprovalConsumer struct{ healthyApprovalConsumer }
+
+func (unavailableApprovalConsumer) Health(context.Context) error {
+	return errors.New("Approval Authority unavailable")
 }
 
 type demoOutlook struct{}

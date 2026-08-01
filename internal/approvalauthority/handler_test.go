@@ -97,9 +97,7 @@ func TestSmartLockApprovalReturnsBoundTraceAndRejectsMismatchExpiryAndReplay(t *
 		t.Fatalf("issue expiring Approval: %v", err)
 	}
 	now = now.Add(2 * time.Minute)
-	withoutTrace := binding
-	withoutTrace.TraceID = ""
-	if _, err := consumer.ConsumeExact(t.Context(), expiredToken, withoutTrace); err == nil {
+	if _, err := consumer.ConsumeExact(t.Context(), expiredToken, binding); err == nil {
 		t.Fatal("expired smart-lock Approval was consumed")
 	}
 
@@ -108,11 +106,11 @@ func TestSmartLockApprovalReturnsBoundTraceAndRejectsMismatchExpiryAndReplay(t *
 	if err != nil {
 		t.Fatalf("issue valid Approval: %v", err)
 	}
-	consumed, err := consumer.ConsumeExact(t.Context(), validToken, withoutTrace)
+	consumed, err := consumer.ConsumeExact(t.Context(), validToken, binding)
 	if err != nil || consumed.TraceID != "smart-lock-trace-42" {
 		t.Fatalf("consume exact smart-lock Approval: trace=%q err=%v", consumed.TraceID, err)
 	}
-	if _, err := consumer.ConsumeExact(t.Context(), validToken, withoutTrace); err == nil {
+	if _, err := consumer.ConsumeExact(t.Context(), validToken, binding); err == nil {
 		t.Fatal("replayed smart-lock Approval was consumed")
 	}
 }

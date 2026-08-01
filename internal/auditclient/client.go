@@ -40,3 +40,19 @@ func (client *Client) Record(ctx context.Context, record gateway.AuditRecord) er
 	}
 	return nil
 }
+
+func (client *Client) Health(ctx context.Context) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, client.baseURL+"/healthz", nil)
+	if err != nil {
+		return err
+	}
+	response, err := client.httpClient.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("audit collector health returned HTTP %d", response.StatusCode)
+	}
+	return nil
+}

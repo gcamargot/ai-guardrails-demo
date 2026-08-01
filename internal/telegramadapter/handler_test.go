@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/nahtao97/agent-tool-guardrails/internal/meeting"
+	"github.com/nahtao97/agent-tool-guardrails/internal/smartlock"
 	"github.com/nahtao97/agent-tool-guardrails/internal/telegramadapter"
 )
 
@@ -190,7 +191,7 @@ func TestOwnerReviewsAndExplicitlyApprovesExactSmartLockOperation(t *testing.T) 
 		t.Fatalf("review produced %d Effects", lock.effects)
 	}
 
-	approved := postTelegramResponse(t, server.URL, `{"message":{"from":{"id":9001},"text":"/unlock demo-front-door exact-lock-approval"}}`)
+	approved := postTelegramResponse(t, server.URL, `{"message":{"from":{"id":9001},"text":"/unlock demo-front-door smart-lock-trace-1 exact-lock-approval"}}`)
 	defer approved.Body.Close()
 	if approved.StatusCode != http.StatusOK {
 		t.Fatalf("unlock status = %d, want %d", approved.StatusCode, http.StatusOK)
@@ -365,7 +366,7 @@ func (gateway *capturingSmartLockGateway) ReviewUnlock(_ context.Context, identi
 	}, nil
 }
 
-func (gateway *capturingSmartLockGateway) Unlock(_ context.Context, identity telegramadapter.TrustedTelegramIdentity, _ telegramadapter.SmartLockDeviceID, _ meeting.ApprovalToken) (telegramadapter.SmartLockState, error) {
+func (gateway *capturingSmartLockGateway) Unlock(_ context.Context, identity telegramadapter.TrustedTelegramIdentity, _ telegramadapter.SmartLockDeviceID, _ smartlock.TraceID, _ string) (telegramadapter.SmartLockState, error) {
 	gateway.identity = identity
 	gateway.effects++
 	return telegramadapter.SmartLockState{DeviceID: "demo-front-door", State: "unlocked"}, nil

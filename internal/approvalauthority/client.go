@@ -55,14 +55,14 @@ func (client *Client) ConsumeExact(ctx context.Context, approval string, binding
 		return Consumption{}, err
 	}
 	defer response.Body.Close()
+	consumed := Consumption{TraceID: response.Header.Get("X-Approval-Trace-ID")}
 	if response.StatusCode != http.StatusNoContent {
-		return Consumption{}, fmt.Errorf("Approval denied with HTTP %d", response.StatusCode)
+		return consumed, fmt.Errorf("Approval denied with HTTP %d", response.StatusCode)
 	}
-	traceID := response.Header.Get("X-Approval-Trace-ID")
-	if traceID == "" {
+	if consumed.TraceID == "" {
 		return Consumption{}, errors.New("Approval Authority returned no trace correlation")
 	}
-	return Consumption{TraceID: traceID}, nil
+	return consumed, nil
 }
 
 func (client *Client) Health(ctx context.Context) error {

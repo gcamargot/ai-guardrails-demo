@@ -13,6 +13,7 @@ logs="$(docker compose logs --no-color)"
 for forbidden in \
   'demo-calendar-credential' \
   'demo-outlook-credential' \
+  'demo-smart-lock-credential' \
   'demo-telegram-webhook-secret' \
   'owner-demo-password' \
   'PROMPT_INJECTION_SENTINEL_7F3A' \
