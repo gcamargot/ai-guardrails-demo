@@ -140,7 +140,8 @@
       "serviceAccountsEnabled": false,
       "publicClient": false,
       "protocol": "openid-connect",
-      "defaultClientScopes": ["coffee_station.read", "calendar.free_busy.read", "calendar.meeting.propose", "calendar.meeting.approve"]
+      "defaultClientScopes": ["coffee_station.read", "calendar.free_busy.read", "calendar.meeting.propose"],
+      "optionalClientScopes": ["calendar.meeting.approve"]
     },
     {
       "clientId": "coding-agent",

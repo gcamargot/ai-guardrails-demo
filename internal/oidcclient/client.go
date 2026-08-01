@@ -18,12 +18,19 @@ type Client struct {
 }
 
 func (client Client) PasswordToken(ctx context.Context, username, password string) (string, error) {
+	return client.PasswordTokenWithScopes(ctx, username, password, nil)
+}
+
+func (client Client) PasswordTokenWithScopes(ctx context.Context, username, password string, scopes []string) (string, error) {
 	form := url.Values{
 		"grant_type":    {"password"},
 		"client_id":     {client.ClientID},
 		"client_secret": {client.ClientSecret},
 		"username":      {username},
 		"password":      {password},
+	}
+	if len(scopes) > 0 {
+		form.Set("scope", "openid "+strings.Join(scopes, " "))
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, client.Endpoint, strings.NewReader(form.Encode()))
 	if err != nil {

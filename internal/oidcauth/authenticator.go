@@ -15,12 +15,14 @@ type Config struct {
 	Issuer          string
 	Audience        string
 	RequiredScopes  []gateway.Capability
+	OptionalScopes  []gateway.Capability
 	DiscoveryClient *http.Client
 }
 
 type Authenticator struct {
 	verifier       *oidc.IDTokenVerifier
 	requiredScopes []gateway.Capability
+	optionalScopes []gateway.Capability
 }
 
 func New(ctx context.Context, config Config) (*Authenticator, error) {
@@ -37,6 +39,7 @@ func New(ctx context.Context, config Config) (*Authenticator, error) {
 	return &Authenticator{
 		verifier:       provider.Verifier(&oidc.Config{ClientID: config.Audience}),
 		requiredScopes: append([]gateway.Capability(nil), config.RequiredScopes...),
+		optionalScopes: append([]gateway.Capability(nil), config.OptionalScopes...),
 	}, nil
 }
 
@@ -67,6 +70,11 @@ func (authenticator *Authenticator) Verify(ctx context.Context, rawToken string)
 			return gateway.TrustedIdentity{}, fmt.Errorf("required scope %q is missing", required)
 		}
 		capabilities = append(capabilities, required)
+	}
+	for _, optional := range authenticator.optionalScopes {
+		if _, ok := granted[string(optional)]; ok {
+			capabilities = append(capabilities, optional)
+		}
 	}
 	return gateway.TrustedIdentity{
 		Subject:          gateway.Subject(claims.Subject),

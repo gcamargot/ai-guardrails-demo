@@ -21,19 +21,8 @@ func TestApprovedRequestRetriesCreateAtMostOneCalendarEvent(t *testing.T) {
 	}
 	first := createEvent(t, server, arguments)
 	second := createEvent(t, server, arguments)
-	if first.EventID != "demo-event-1" || !first.Created || second.EventID != first.EventID || second.Created {
+	if first.EventID != "demo-event-1" || !first.Created || first.EventCount != 1 || second.EventID != first.EventID || second.Created || second.EventCount != 1 {
 		t.Fatalf("first=%#v second=%#v", first, second)
-	}
-	response, err := http.Get(server.URL + "/demo/event-count")
-	if err != nil {
-		t.Fatalf("read synthetic event count: %v", err)
-	}
-	defer response.Body.Close()
-	var count struct {
-		EventCount int `json:"event_count"`
-	}
-	if json.NewDecoder(response.Body).Decode(&count) != nil || count.EventCount != 1 {
-		t.Fatalf("event count = %#v, want 1", count)
 	}
 }
 

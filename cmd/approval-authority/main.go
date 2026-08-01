@@ -16,6 +16,7 @@ func main() {
 		ConsumerCredential: envconfig.Must("APPROVAL_CONSUMER_CREDENTIAL"),
 		OwnerSubject:       envconfig.Must("OWNER_SUBJECT"),
 		TTL:                2 * time.Minute,
+		StateFile:          envconfig.Must("APPROVAL_STATE_FILE"),
 	})
 	server := &http.Server{
 		Addr: ":8086", Handler: handler, ReadHeaderTimeout: 5 * time.Second,

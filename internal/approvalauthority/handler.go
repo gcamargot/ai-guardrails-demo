@@ -1,6 +1,7 @@
 package approvalauthority
 
 import (
+	"bufio"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -10,6 +11,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -30,12 +33,14 @@ type Config struct {
 	OwnerSubject       string
 	TTL                time.Duration
 	Now                func() time.Time
+	StateFile          string
 }
 
 type authority struct {
-	config Config
-	mu     sync.Mutex
-	used   map[string]struct{}
+	config   Config
+	mu       sync.Mutex
+	used     map[string]struct{}
+	stateErr error
 }
 
 type claims struct {
@@ -56,9 +61,15 @@ func NewHandler(config Config) http.Handler {
 		config.TTL = 2 * time.Minute
 	}
 	service := &authority{config: config, used: make(map[string]struct{})}
+	service.stateErr = service.loadUsedNonces()
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(response http.ResponseWriter, _ *http.Request) {
 		response.Header().Set("Content-Type", "application/json")
+		if service.stateErr != nil {
+			response.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = response.Write([]byte(`{"status":"unavailable"}`))
+			return
+		}
 		_, _ = response.Write([]byte(`{"status":"ready"}`))
 	})
 	mux.HandleFunc("POST /approvals/issue", service.authenticate(config.IssuerCredential, service.issue))
@@ -78,6 +89,10 @@ func (service *authority) authenticate(credential string, next http.HandlerFunc)
 }
 
 func (service *authority) issue(response http.ResponseWriter, request *http.Request) {
+	if service.stateErr != nil {
+		http.Error(response, "approval state unavailable", http.StatusServiceUnavailable)
+		return
+	}
 	var input struct {
 		Binding Binding `json:"binding"`
 	}
@@ -146,8 +161,49 @@ func (service *authority) consume(response http.ResponseWriter, request *http.Re
 		http.Error(response, "Approval already consumed", http.StatusConflict)
 		return
 	}
+	if err := service.persistNonce(approved.Nonce); err != nil {
+		service.stateErr = err
+		http.Error(response, "approval state unavailable", http.StatusServiceUnavailable)
+		return
+	}
 	service.used[approved.Nonce] = struct{}{}
 	response.WriteHeader(http.StatusNoContent)
+}
+
+func (service *authority) loadUsedNonces() error {
+	if service.config.StateFile == "" {
+		return errors.New("Approval nonce state file is required")
+	}
+	if err := os.MkdirAll(filepath.Dir(service.config.StateFile), 0o700); err != nil {
+		return err
+	}
+	file, err := os.OpenFile(service.config.StateFile, os.O_CREATE|os.O_RDONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		if nonce := strings.TrimSpace(scanner.Text()); nonce != "" {
+			service.used[nonce] = struct{}{}
+		}
+	}
+	return scanner.Err()
+}
+
+func (service *authority) persistNonce(nonce string) error {
+	file, err := os.OpenFile(service.config.StateFile, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err = file.WriteString(nonce + "\n"); err == nil {
+		err = file.Sync()
+	}
+	closeErr := file.Close()
+	if err != nil {
+		return err
+	}
+	return closeErr
 }
 
 func (service *authority) validBinding(binding Binding) bool {

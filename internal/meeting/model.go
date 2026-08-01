@@ -27,6 +27,7 @@ type Operation struct {
 	Tool      string         `json:"tool"`
 	Arguments EventArguments `json:"arguments"`
 	TraceID   TraceID        `json:"trace_id"`
+	Approval  ApprovalToken  `json:"approval,omitempty"`
 }
 
 type EventArguments struct {
@@ -40,8 +41,9 @@ type EventArguments struct {
 }
 
 type Event struct {
-	EventID string `json:"event_id"`
-	Created bool   `json:"created"`
+	EventID    string `json:"event_id"`
+	Created    bool   `json:"created"`
+	EventCount int    `json:"event_count"`
 }
 
 type Denial struct {

@@ -109,19 +109,22 @@ func TestOwnerReviewsExactOperationBeforeExplicitApproval(t *testing.T) {
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 
+	if status := postTelegram(t, server.URL, `{"message":{"from":{"id":9001},"text":"/approve proposal-1"}}`); status != http.StatusBadRequest {
+		t.Fatalf("unreviewed approve status = %d, want 400", status)
+	}
 	if status := postTelegram(t, server.URL, `{"message":{"from":{"id":9001},"text":"/review proposal-1"}}`); status != http.StatusOK {
 		t.Fatalf("review status = %d", status)
 	}
 	if meetings.reviewed != "proposal-1" || meetings.effects != 0 {
 		t.Fatalf("reviewed=%q effects=%d", meetings.reviewed, meetings.effects)
 	}
-	if status := postTelegram(t, server.URL, `{"message":{"from":{"id":9001},"text":"/approve proposal-1"}}`); status != http.StatusOK {
+	if status := postTelegram(t, server.URL, `{"message":{"from":{"id":9001},"text":"/approve proposal-1 reviewed-token"}}`); status != http.StatusOK {
 		t.Fatalf("approve status = %d", status)
 	}
 	if meetings.approved != "proposal-1" || meetings.effects != 1 {
 		t.Fatalf("approved=%q effects=%d", meetings.approved, meetings.effects)
 	}
-	if status := postTelegram(t, server.URL, `{"message":{"from":{"id":9001},"text":"/deny proposal-2"}}`); status != http.StatusOK {
+	if status := postTelegram(t, server.URL, `{"message":{"from":{"id":9001},"text":"/deny proposal-2 reviewed-token"}}`); status != http.StatusOK {
 		t.Fatalf("deny status = %d", status)
 	}
 	if meetings.denied != "proposal-2" {
@@ -250,13 +253,13 @@ func (gateway *capturingMeetingGateway) ReviewProposal(_ context.Context, _ tele
 	return meeting.Operation{Tool: "calendar.create_event", TraceID: "trace-1", Arguments: meeting.EventArguments{ProposalID: id}}, nil
 }
 
-func (gateway *capturingMeetingGateway) ApproveProposal(_ context.Context, _ telegramadapter.TrustedTelegramIdentity, id meeting.ProposalID) (meeting.Event, error) {
+func (gateway *capturingMeetingGateway) ApproveProposal(_ context.Context, _ telegramadapter.TrustedTelegramIdentity, id meeting.ProposalID, _ meeting.ApprovalToken) (meeting.Event, error) {
 	gateway.approved = id
 	gateway.effects++
-	return meeting.Event{EventID: "event-1", Created: true}, nil
+	return meeting.Event{EventID: "event-1", Created: true, EventCount: 1}, nil
 }
 
-func (gateway *capturingMeetingGateway) DenyProposal(_ context.Context, _ telegramadapter.TrustedTelegramIdentity, id meeting.ProposalID) (meeting.Denial, error) {
+func (gateway *capturingMeetingGateway) DenyProposal(_ context.Context, _ telegramadapter.TrustedTelegramIdentity, id meeting.ProposalID, _ meeting.ApprovalToken) (meeting.Denial, error) {
 	gateway.denied = id
 	return meeting.Denial{ProposalID: id, Status: "denied"}, nil
 }

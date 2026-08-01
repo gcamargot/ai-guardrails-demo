@@ -349,6 +349,7 @@ func TestApprovalMustBeExactActiveAndSingleUseBeforeCalendarEffect(t *testing.T)
 		OwnerSubject:       "owner-subject-id",
 		TTL:                time.Minute,
 		Now:                func() time.Time { return now },
+		StateFile:          t.TempDir() + "/nonces",
 	}))
 	t.Cleanup(authorityServer.Close)
 	issuer := approvalauthority.NewClient(authorityServer.URL, "trusted-issuer-credential", authorityServer.Client())
@@ -401,6 +402,28 @@ func TestApprovalMustBeExactActiveAndSingleUseBeforeCalendarEffect(t *testing.T)
 	}
 	if result := approveMeeting(t, owner, proposal.ProposalID, validToken); !result.IsError || events.count != 1 {
 		t.Fatalf("replayed Approval result=%#v calendar effects=%d", result, events.count)
+	}
+
+	deniedProposal := proposals.Submit("external-alice-subject-id", meeting.ProposalInput{
+		Start: time.Date(2026, 8, 3, 14, 0, 0, 0, time.UTC), End: time.Date(2026, 8, 3, 14, 30, 0, 0, time.UTC),
+		Reason: "Denied sync", Contact: "alice@example.invalid",
+	})
+	deniedOperation, _ := proposals.Review(deniedProposal.ProposalID)
+	deniedBinding := approvalauthority.Binding{
+		Subject: "owner-subject-id", Actor: "telegram-agent", Tool: deniedOperation.Tool,
+		Arguments: deniedOperation.Arguments, TraceID: string(deniedOperation.TraceID),
+	}
+	denialToken, _ := issuer.Issue(t.Context(), deniedBinding)
+	denial, err := owner.CallTool(t.Context(), &mcp.CallToolParams{
+		Name:      "calendar.deny_meeting_proposal",
+		Arguments: map[string]any{"proposal_id": deniedProposal.ProposalID, "approval": denialToken},
+	})
+	if err != nil || denial.IsError {
+		t.Fatalf("deny reviewed Meeting Proposal: result=%#v err=%v", denial, err)
+	}
+	lateApproval, _ := issuer.Issue(t.Context(), deniedBinding)
+	if result := approveMeeting(t, owner, deniedProposal.ProposalID, lateApproval); !result.IsError || events.count != 1 {
+		t.Fatalf("denied proposal approval result=%#v calendar effects=%d", result, events.count)
 	}
 }
 
@@ -726,7 +749,7 @@ type countingCalendarEvents struct{ count int }
 
 func (calendar *countingCalendarEvents) CreateEvent(_ context.Context, _ meeting.EventArguments) (meeting.Event, error) {
 	calendar.count++
-	return meeting.Event{EventID: "event-1", Created: calendar.count == 1}, nil
+	return meeting.Event{EventID: "event-1", Created: calendar.count == 1, EventCount: 1}, nil
 }
 
 type availableCalendar struct{}

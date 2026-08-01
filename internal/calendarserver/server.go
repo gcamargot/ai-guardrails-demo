@@ -80,20 +80,14 @@ func NewHandler(expectedCredential string) http.Handler {
 				return
 			}
 			response.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(response).Encode(meeting.Event{EventID: existing.eventID, Created: false})
+			_ = json.NewEncoder(response).Encode(meeting.Event{EventID: existing.eventID, Created: false, EventCount: len(state.events)})
 			return
 		}
 		eventID := "demo-event-" + strings.TrimPrefix(arguments.ProposalID.String(), "proposal-")
 		state.events[arguments.IdempotencyKey] = storedEvent{arguments: arguments, eventID: eventID}
 		response.Header().Set("Content-Type", "application/json")
 		response.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(response).Encode(meeting.Event{EventID: eventID, Created: true})
-	})
-	mux.HandleFunc("GET /demo/event-count", func(response http.ResponseWriter, _ *http.Request) {
-		state.Lock()
-		defer state.Unlock()
-		response.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(response).Encode(map[string]int{"event_count": len(state.events)})
+		_ = json.NewEncoder(response).Encode(meeting.Event{EventID: eventID, Created: true, EventCount: len(state.events)})
 	})
 	return mux
 }

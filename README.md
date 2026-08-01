@@ -17,7 +17,7 @@ The smoke path proves these outcomes:
 - A verified Telegram update maps user `4242` to `external-alice-subject-id`; the deterministic Qwen simulator may classify only the requested time window and cannot assert authority.
 - That External Subject discovers only `calendar.find_availability` and `calendar.submit_meeting_proposal`; availability reveals only bounded `start`/`end` intervals.
 - Availability and Meeting Proposals have independent per-Subject rate limits. A proposal records interval, requester, reason and contact without calling the calendar.
-- Telegram user `9001` maps to the Owner. `/review proposal-1` returns the exact normalized `calendar.create_event` operation; only explicit `/approve` or `/deny` commands can resolve it.
+- Telegram user `9001` maps to the Owner. `/review proposal-1` returns the exact normalized `calendar.create_event` operation and a short-lived review token; only `/approve proposal-1 <token>` or `/deny proposal-1 <token>` can resolve it.
 - The isolated Approval Authority signs a two-minute Approval bound to Owner Subject, Telegram Actor, Tool, canonical arguments, trace, expiry and a random nonce. The gateway consumes it atomically before the calendar Effect; mismatch, expiry, replay or Authority failure deny closed.
 - Calendar creation uses `meeting-proposal:<id>` as an idempotency key, so retries return the same synthetic event and keep `event_count=1`.
 - Both gateway and isolated calendar load their shared synthetic calendar credential from Vault. The smoke fails if that credential appears in service logs.
@@ -40,9 +40,9 @@ Vault is the source of the calendar credential for both sides of the isolated co
 
 ## Exact Meeting Proposal approval
 
-An External Subject uses `/propose <start> <end> <contact> <reason>` to create only local pending state. The Owner uses `/review <proposal-id>` before an explicit `/approve <proposal-id>` or `/deny <proposal-id>`. The Telegram adapter re-reads the normalized operation at approval time, asks the dedicated Approval Authority to attest it, and passes the opaque Approval to the gateway. The Approval Authority has neither a calendar credential nor network access to Protected Resources.
+An External Subject uses `/propose <start> <end> <contact> <reason>` to create only local pending state. The Owner uses `/review <proposal-id>` before an explicit `/approve <proposal-id> <review-token>` or `/deny <proposal-id> <review-token>`. Review explicitly requests the optional `calendar.meeting.approve` Turn Capability, displays the exact normalized operation and asks the dedicated Approval Authority to attest it. The sensitive capability is not a default Keycloak scope. Resolution passes the opaque Approval to the gateway; direct resolution without the reviewed token is rejected. The Approval Authority has neither a calendar credential nor network access to Protected Resources.
 
-Approval nonces, proposal state, rate-limit counters and calendar idempotency records are deliberately local and mutex-protected for this single-instance demo. Redis with atomic scripts and replicated state is the documented production evolution. Checked-in Approval credentials and signing material are synthetic Compose fixtures, never model inputs or production secrets.
+Consumed Approval nonces are fsync'd to a local Compose volume and reloaded after Approval Authority restarts. Proposal resolution is atomic in the single gateway process, while rate-limit counters and calendar idempotency records remain local. Redis with atomic scripts and replicated state is the documented production evolution. Checked-in Approval credentials and signing material are synthetic Compose fixtures, never model inputs or production secrets.
 
 ## Test
 

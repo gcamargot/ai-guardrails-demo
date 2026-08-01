@@ -35,8 +35,8 @@ type AvailabilityGateway interface {
 type MeetingGateway interface {
 	SubmitProposal(context.Context, TrustedTelegramIdentity, meeting.ProposalInput) (meeting.Proposal, error)
 	ReviewProposal(context.Context, TrustedTelegramIdentity, meeting.ProposalID) (meeting.Operation, error)
-	ApproveProposal(context.Context, TrustedTelegramIdentity, meeting.ProposalID) (meeting.Event, error)
-	DenyProposal(context.Context, TrustedTelegramIdentity, meeting.ProposalID) (meeting.Denial, error)
+	ApproveProposal(context.Context, TrustedTelegramIdentity, meeting.ProposalID, meeting.ApprovalToken) (meeting.Event, error)
+	DenyProposal(context.Context, TrustedTelegramIdentity, meeting.ProposalID, meeting.ApprovalToken) (meeting.Denial, error)
 }
 
 type Config struct {
@@ -94,8 +94,13 @@ func NewHandler(config Config) http.Handler {
 				http.Error(response, "forbidden", http.StatusForbidden)
 				return
 			}
-			command, rawID, _ := strings.Cut(update.Message.Text, " ")
-			proposalID := meeting.ProposalID(strings.TrimSpace(rawID))
+			parts := strings.Fields(update.Message.Text)
+			command := parts[0]
+			if (command == "/review" && len(parts) != 2) || (command != "/review" && len(parts) != 3) {
+				http.Error(response, "review the exact Meeting Proposal before resolving it", http.StatusBadRequest)
+				return
+			}
+			proposalID := meeting.ProposalID(parts[1])
 			if proposalID == "" {
 				http.Error(response, "invalid Meeting Proposal reference", http.StatusBadRequest)
 				return
@@ -111,7 +116,7 @@ func NewHandler(config Config) http.Handler {
 				return
 			}
 			if command == "/deny" {
-				denial, err := config.Meetings.DenyProposal(request.Context(), identity, proposalID)
+				denial, err := config.Meetings.DenyProposal(request.Context(), identity, proposalID, meeting.ApprovalToken(parts[2]))
 				if err != nil {
 					http.Error(response, "Meeting Proposal denial failed", http.StatusBadGateway)
 					return
@@ -119,7 +124,7 @@ func NewHandler(config Config) http.Handler {
 				_ = json.NewEncoder(response).Encode(denial)
 				return
 			}
-			event, err := config.Meetings.ApproveProposal(request.Context(), identity, proposalID)
+			event, err := config.Meetings.ApproveProposal(request.Context(), identity, proposalID, meeting.ApprovalToken(parts[2]))
 			if err != nil {
 				http.Error(response, "Meeting Proposal approval failed", http.StatusBadGateway)
 				return

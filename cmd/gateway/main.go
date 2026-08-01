@@ -34,6 +34,7 @@ func main() {
 		Issuer:          envconfig.Must("OIDC_ISSUER"),
 		Audience:        envconfig.Must("OIDC_AUDIENCE"),
 		RequiredScopes:  requiredCapabilities("OIDC_REQUIRED_SCOPES"),
+		OptionalScopes:  optionalCapabilities("OIDC_OPTIONAL_SCOPES"),
 		DiscoveryClient: httpClient,
 	})
 	if err != nil {
@@ -69,16 +70,24 @@ func main() {
 }
 
 func requiredCapabilities(name string) []gateway.Capability {
-	value := envconfig.Must(name)
+	capabilities := parseCapabilities(envconfig.Must(name))
+	if len(capabilities) == 0 {
+		log.Fatalf("required environment variable %s contains no capabilities", name)
+	}
+	return capabilities
+}
+
+func optionalCapabilities(name string) []gateway.Capability {
+	return parseCapabilities(os.Getenv(name))
+}
+
+func parseCapabilities(value string) []gateway.Capability {
 	parts := strings.Split(value, ",")
 	capabilities := make([]gateway.Capability, 0, len(parts))
 	for _, part := range parts {
 		if capability := strings.TrimSpace(part); capability != "" {
 			capabilities = append(capabilities, gateway.Capability(capability))
 		}
-	}
-	if len(capabilities) == 0 {
-		log.Fatalf("required environment variable %s contains no capabilities", name)
 	}
 	return capabilities
 }

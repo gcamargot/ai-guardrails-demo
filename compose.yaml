@@ -100,6 +100,14 @@ services:
       timeout: 1s
       retries: 15
 
+  approval-state-init:
+    image: alpine:3.22
+    command: ["sh", "-c", "chown -R 10001:10001 /state"]
+    volumes:
+      - approval-state:/state
+    networks:
+      - approval
+
   approval-authority:
     build: .
     command: /app/approval-authority
@@ -107,9 +115,15 @@ services:
       APPROVAL_ISSUER_CREDENTIAL: demo-approval-service-credential
       APPROVAL_CONSUMER_CREDENTIAL: demo-approval-consumer-credential
       APPROVAL_SIGNING_KEY: demo-approval-signing-key-32-bytes-minimum
+      APPROVAL_STATE_FILE: /state/consumed-nonces
       OWNER_SUBJECT: owner-subject-id
     networks:
       - approval
+    volumes:
+      - approval-state:/state
+    depends_on:
+      approval-state-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8086/healthz"]
       interval: 2s
@@ -173,7 +187,8 @@ services:
       OPA_URL: http://opa:8181
       OIDC_AUDIENCE: agent-tools-gateway
       OIDC_ISSUER: http://keycloak:8080/realms/agent-tools
-      OIDC_REQUIRED_SCOPES: calendar.free_busy.read,calendar.meeting.propose,calendar.meeting.approve
+      OIDC_OPTIONAL_SCOPES: calendar.meeting.approve
+      OIDC_REQUIRED_SCOPES: calendar.free_busy.read,calendar.meeting.propose
       VAULT_TOKEN_FILE: /run/vault-token/gateway
       VAULT_URL: http://vault:8200
     depends_on:
@@ -258,7 +273,6 @@ services:
     build: .
     command: /app/smoke
     environment:
-      CALENDAR_DEMO_URL: http://calendar:8083
       GATEWAY_MCP_URL: http://gateway:8080/mcp
       KEYCLOAK_TOKEN_URL: http://keycloak:8080/realms/agent-tools/protocol/openid-connect/token
       TELEGRAM_GATEWAY_MCP_URL: http://telegram-gateway:8080/mcp
@@ -271,7 +285,6 @@ services:
     networks:
       - public
       - identity
-      - protected
     profiles:
       - test
 
@@ -292,3 +305,4 @@ networks:
 
 volumes:
   vault-tokens: {}
+  approval-state: {}

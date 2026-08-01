@@ -57,6 +57,28 @@ func TestSignedOIDCTokenProducesTrustedIdentity(t *testing.T) {
 	}
 }
 
+func TestExplicitOptionalScopeBecomesTurnCapability(t *testing.T) {
+	t.Parallel()
+	issuer := newTestIssuer(t)
+	authenticator, err := oidcauth.New(t.Context(), oidcauth.Config{
+		Issuer: issuer.URL, Audience: "agent-tools-gateway",
+		RequiredScopes: []gateway.Capability{"calendar.meeting.propose"},
+		OptionalScopes: []gateway.Capability{"calendar.meeting.approve"}, DiscoveryClient: issuer.Client(),
+	})
+	if err != nil {
+		t.Fatalf("create OIDC authenticator: %v", err)
+	}
+	claims := validClaims(issuer.URL)
+	claims["scope"] = "calendar.meeting.propose calendar.meeting.approve"
+	identity, err := authenticator.Verify(t.Context(), issuer.sign(t, claims))
+	if err != nil {
+		t.Fatalf("verify explicit approval token: %v", err)
+	}
+	if len(identity.TurnCapabilities) != 2 || identity.TurnCapabilities[1] != "calendar.meeting.approve" {
+		t.Fatalf("Turn Capabilities = %#v", identity.TurnCapabilities)
+	}
+}
+
 func TestTwoOAuthClientsRemainDistinctActorsForSameSubject(t *testing.T) {
 	t.Parallel()
 

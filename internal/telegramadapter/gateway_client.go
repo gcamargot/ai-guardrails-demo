@@ -106,7 +106,7 @@ func (client *GatewayClient) SubmitProposal(ctx context.Context, identity Truste
 }
 
 func (client *GatewayClient) ReviewProposal(ctx context.Context, identity TrustedTelegramIdentity, id meeting.ProposalID) (meeting.Operation, error) {
-	session, err := client.connect(ctx, identity)
+	session, err := client.connectWithScopes(ctx, identity, []string{"calendar.meeting.approve"})
 	if err != nil {
 		return meeting.Operation{}, err
 	}
@@ -119,31 +119,31 @@ func (client *GatewayClient) ReviewProposal(ctx context.Context, identity Truste
 	if err := decodeStructured(result.StructuredContent, &operation); err != nil {
 		return meeting.Operation{}, err
 	}
-	return operation, nil
-}
-
-func (client *GatewayClient) ApproveProposal(ctx context.Context, identity TrustedTelegramIdentity, id meeting.ProposalID) (meeting.Event, error) {
 	if identity.Subject != client.config.OwnerSubject || client.config.Approvals == nil {
-		return meeting.Event{}, errors.New("only the Owner can request an exact Approval")
-	}
-	operation, err := client.ReviewProposal(ctx, identity, id)
-	if err != nil {
-		return meeting.Event{}, err
+		return meeting.Operation{}, errors.New("only the Owner can review an exact Approval")
 	}
 	approval, err := client.config.Approvals.Issue(ctx, approvalauthority.Binding{
 		Subject: string(identity.Subject), Actor: string(identity.Actor), Tool: operation.Tool,
 		Arguments: operation.Arguments, TraceID: string(operation.TraceID),
 	})
 	if err != nil {
-		return meeting.Event{}, fmt.Errorf("issue exact Approval: %w", err)
+		return meeting.Operation{}, fmt.Errorf("issue reviewed exact Approval: %w", err)
 	}
-	session, err := client.connect(ctx, identity)
+	operation.Approval = meeting.ApprovalToken(approval)
+	return operation, nil
+}
+
+func (client *GatewayClient) ApproveProposal(ctx context.Context, identity TrustedTelegramIdentity, id meeting.ProposalID, approval meeting.ApprovalToken) (meeting.Event, error) {
+	if identity.Subject != client.config.OwnerSubject || approval == "" {
+		return meeting.Event{}, errors.New("only the Owner can request an exact Approval")
+	}
+	session, err := client.connectWithScopes(ctx, identity, []string{"calendar.meeting.approve"})
 	if err != nil {
 		return meeting.Event{}, err
 	}
 	defer session.Close()
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{
-		Name: "calendar.approve_meeting_proposal", Arguments: map[string]any{"proposal_id": id, "approval": approval},
+		Name: "calendar.approve_meeting_proposal", Arguments: map[string]any{"proposal_id": id, "approval": string(approval)},
 	})
 	if err != nil || result.IsError {
 		return meeting.Event{}, toolError("approve Meeting Proposal", result, err)
@@ -155,16 +155,16 @@ func (client *GatewayClient) ApproveProposal(ctx context.Context, identity Trust
 	return event, nil
 }
 
-func (client *GatewayClient) DenyProposal(ctx context.Context, identity TrustedTelegramIdentity, id meeting.ProposalID) (meeting.Denial, error) {
-	if identity.Subject != client.config.OwnerSubject {
+func (client *GatewayClient) DenyProposal(ctx context.Context, identity TrustedTelegramIdentity, id meeting.ProposalID, approval meeting.ApprovalToken) (meeting.Denial, error) {
+	if identity.Subject != client.config.OwnerSubject || approval == "" {
 		return meeting.Denial{}, errors.New("only the Owner can deny a Meeting Proposal")
 	}
-	session, err := client.connect(ctx, identity)
+	session, err := client.connectWithScopes(ctx, identity, []string{"calendar.meeting.approve"})
 	if err != nil {
 		return meeting.Denial{}, err
 	}
 	defer session.Close()
-	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "calendar.deny_meeting_proposal", Arguments: map[string]any{"proposal_id": id}})
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "calendar.deny_meeting_proposal", Arguments: map[string]any{"proposal_id": id, "approval": string(approval)}})
 	if err != nil || result.IsError {
 		return meeting.Denial{}, toolError("deny Meeting Proposal", result, err)
 	}
@@ -176,6 +176,10 @@ func (client *GatewayClient) DenyProposal(ctx context.Context, identity TrustedT
 }
 
 func (client *GatewayClient) connect(ctx context.Context, identity TrustedTelegramIdentity) (*mcp.ClientSession, error) {
+	return client.connectWithScopes(ctx, identity, nil)
+}
+
+func (client *GatewayClient) connectWithScopes(ctx context.Context, identity TrustedTelegramIdentity, scopes []string) (*mcp.ClientSession, error) {
 	if identity.Actor != "telegram-agent" || identity.Channel != "telegram" {
 		return nil, errors.New("trusted Telegram identity does not match gateway credentials")
 	}
@@ -188,7 +192,7 @@ func (client *GatewayClient) connect(ctx context.Context, identity TrustedTelegr
 	token, err := (oidcclient.Client{
 		Endpoint: client.config.TokenEndpoint, ClientID: client.config.ClientID,
 		ClientSecret: client.config.ClientSecret, HTTPClient: client.config.HTTPClient,
-	}).PasswordToken(ctx, username, password)
+	}).PasswordTokenWithScopes(ctx, username, password, scopes)
 	if err != nil {
 		return nil, err
 	}

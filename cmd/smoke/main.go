@@ -23,7 +23,6 @@ func main() {
 	endpoint := environment("GATEWAY_MCP_URL", "http://127.0.0.1:8080/mcp")
 	telegramGatewayEndpoint := environment("TELEGRAM_GATEWAY_MCP_URL", "http://127.0.0.1:8080/mcp")
 	telegramWebhookEndpoint := environment("TELEGRAM_WEBHOOK_URL", "http://127.0.0.1:8084/telegram/webhook")
-	calendarDemoEndpoint := environment("CALENDAR_DEMO_URL", "http://127.0.0.1:8083")
 	tokenEndpoint := environment("KEYCLOAK_TOKEN_URL", "http://127.0.0.1:8082/realms/agent-tools/protocol/openid-connect/token")
 	if status := unauthenticatedStatus(ctx, endpoint); status != http.StatusUnauthorized {
 		log.Fatalf("unauthenticated MCP status = %d, want %d", status, http.StatusUnauthorized)
@@ -62,7 +61,7 @@ func main() {
 	_ = secondAvailability.Body.Close()
 	limitedAvailability := telegramCommand(ctx, telegramWebhookEndpoint, 4242, "una consulta de disponibilidad más", http.StatusTooManyRequests)
 	_ = limitedAvailability.Body.Close()
-	proposalID, eventID := runMeetingFlow(ctx, telegramWebhookEndpoint, calendarDemoEndpoint)
+	proposalID, eventID := runMeetingFlow(ctx, telegramWebhookEndpoint)
 
 	fmt.Printf(
 		"PASS subject=%s actors=%s,%s telegram_decision=%v coding_decision=%v available_intervals=%d proposal=%s event=%s event_count=1 policy_revision=ticket-04\n",
@@ -152,7 +151,7 @@ func verifyExternalDiscoveryAndDenial(ctx context.Context, endpoint, token strin
 	}
 }
 
-func runMeetingFlow(ctx context.Context, webhookEndpoint, calendarEndpoint string) (string, string) {
+func runMeetingFlow(ctx context.Context, webhookEndpoint string) (string, string) {
 	day := nextWorkingDay(time.Now().UTC().AddDate(0, 0, 1))
 	start := time.Date(day.Year(), day.Month(), day.Day(), 13, 0, 0, 0, time.UTC).Format(time.RFC3339)
 	end := time.Date(day.Year(), day.Month(), day.Day(), 13, 30, 0, 0, time.UTC).Format(time.RFC3339)
@@ -173,6 +172,7 @@ func runMeetingFlow(ctx context.Context, webhookEndpoint, calendarEndpoint strin
 	var operation struct {
 		Tool      string `json:"tool"`
 		TraceID   string `json:"trace_id"`
+		Approval  string `json:"approval"`
 		Arguments struct {
 			ProposalID       string `json:"proposal_id"`
 			Start            string `json:"start"`
@@ -187,40 +187,37 @@ func runMeetingFlow(ctx context.Context, webhookEndpoint, calendarEndpoint strin
 	if operation.Tool != "calendar.create_event" || operation.Arguments.ProposalID != submitted.MeetingProposal.ProposalID ||
 		operation.Arguments.Start != start || operation.Arguments.End != end || operation.Arguments.RequesterSubject != "external-alice-subject-id" ||
 		operation.Arguments.Reason != "Platform sync" || operation.Arguments.Contact != "alice@example.invalid" ||
-		operation.Arguments.IdempotencyKey != "meeting-proposal:"+submitted.MeetingProposal.ProposalID || operation.TraceID == "" {
+		operation.Arguments.IdempotencyKey != "meeting-proposal:"+submitted.MeetingProposal.ProposalID || operation.TraceID == "" || operation.Approval == "" {
 		log.Fatalf("Owner review did not expose exact normalized operation: %#v", operation)
 	}
 
-	approvedResponse := telegramCommand(ctx, webhookEndpoint, 9001, "/approve "+submitted.MeetingProposal.ProposalID, http.StatusOK)
+	approvedResponse := telegramCommand(ctx, webhookEndpoint, 9001, "/approve "+submitted.MeetingProposal.ProposalID+" "+operation.Approval, http.StatusOK)
 	var first struct {
-		EventID string `json:"event_id"`
-		Created bool   `json:"created"`
+		EventID    string `json:"event_id"`
+		Created    bool   `json:"created"`
+		EventCount int    `json:"event_count"`
 	}
 	decodeJSON(approvedResponse, &first, "approved event")
-	if first.EventID == "" || !first.Created {
+	if first.EventID == "" || !first.Created || first.EventCount != 1 {
 		log.Fatalf("first approved event = %#v", first)
 	}
-	retryResponse := telegramCommand(ctx, webhookEndpoint, 9001, "/approve "+submitted.MeetingProposal.ProposalID, http.StatusOK)
+	retryReviewResponse := telegramCommand(ctx, webhookEndpoint, 9001, "/review "+submitted.MeetingProposal.ProposalID, http.StatusOK)
+	var retryOperation struct {
+		Approval string `json:"approval"`
+	}
+	decodeJSON(retryReviewResponse, &retryOperation, "retried exact operation")
+	if retryOperation.Approval == "" {
+		log.Fatal("retried review returned no exact Approval")
+	}
+	retryResponse := telegramCommand(ctx, webhookEndpoint, 9001, "/approve "+submitted.MeetingProposal.ProposalID+" "+retryOperation.Approval, http.StatusOK)
 	var retry struct {
-		EventID string `json:"event_id"`
-		Created bool   `json:"created"`
+		EventID    string `json:"event_id"`
+		Created    bool   `json:"created"`
+		EventCount int    `json:"event_count"`
 	}
 	decodeJSON(retryResponse, &retry, "retried event")
-	if retry.EventID != first.EventID || retry.Created {
+	if retry.EventID != first.EventID || retry.Created || retry.EventCount != 1 {
 		log.Fatalf("idempotent retry = %#v, first = %#v", retry, first)
-	}
-
-	request, _ := http.NewRequestWithContext(ctx, http.MethodGet, calendarEndpoint+"/demo/event-count", nil)
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		log.Fatalf("read synthetic event count: %v", err)
-	}
-	defer response.Body.Close()
-	var count struct {
-		EventCount int `json:"event_count"`
-	}
-	if json.NewDecoder(response.Body).Decode(&count) != nil || count.EventCount != 1 {
-		log.Fatalf("synthetic event count = %#v, want 1", count)
 	}
 	return submitted.MeetingProposal.ProposalID, first.EventID
 }

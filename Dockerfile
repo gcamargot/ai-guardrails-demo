@@ -15,6 +15,6 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/qwen-simulator ./c
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/approval-authority ./cmd/approval-authority
 
 FROM alpine:3.22
-RUN addgroup -S app && adduser -S -G app app
+RUN addgroup -g 10001 -S app && adduser -u 10001 -S -G app app
 COPY --from=build /out /app
 USER app

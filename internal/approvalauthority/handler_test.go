@@ -20,6 +20,7 @@ func TestExactApprovalIsConsumedOnlyOnce(t *testing.T) {
 		OwnerSubject:       "owner-subject-id",
 		TTL:                2 * time.Minute,
 		Now:                func() time.Time { return now },
+		StateFile:          t.TempDir() + "/nonces",
 	}))
 	t.Cleanup(server.Close)
 
@@ -42,6 +43,7 @@ func TestArgumentMismatchedAndExpiredApprovalsAreDenied(t *testing.T) {
 		OwnerSubject:       "owner-subject-id",
 		TTL:                time.Minute,
 		Now:                func() time.Time { return now },
+		StateFile:          t.TempDir() + "/nonces",
 	}))
 	t.Cleanup(server.Close)
 
@@ -57,6 +59,28 @@ func TestArgumentMismatchedAndExpiredApprovalsAreDenied(t *testing.T) {
 	now = now.Add(2 * time.Minute)
 	if status := consumeApproval(t, server, expiredToken, binding); status != http.StatusForbidden {
 		t.Fatalf("expired status = %d, want %d", status, http.StatusForbidden)
+	}
+}
+
+func TestConsumedApprovalRemainsSingleUseAfterAuthorityRestart(t *testing.T) {
+	now := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+	stateFile := t.TempDir() + "/consumed-nonces"
+	config := approvalauthority.Config{
+		SigningKey: []byte("test-signing-key-with-at-least-32-bytes"), IssuerCredential: "trusted-issuer-credential",
+		ConsumerCredential: "trusted-consumer-credential", OwnerSubject: "owner-subject-id", TTL: time.Minute,
+		Now: func() time.Time { return now }, StateFile: stateFile,
+	}
+	first := httptest.NewServer(approvalauthority.NewHandler(config))
+	token := issueApproval(t, first, exactBinding())
+	if status := consumeApproval(t, first, token, exactBinding()); status != http.StatusNoContent {
+		t.Fatalf("first consume status = %d", status)
+	}
+	first.Close()
+
+	restarted := httptest.NewServer(approvalauthority.NewHandler(config))
+	t.Cleanup(restarted.Close)
+	if status := consumeApproval(t, restarted, token, exactBinding()); status != http.StatusConflict {
+		t.Fatalf("post-restart replay status = %d, want %d", status, http.StatusConflict)
 	}
 }
 
