@@ -11,6 +11,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/nahtao97/agent-tool-guardrails/internal/gateway"
+	"golang.org/x/oauth2"
 )
 
 func connectGateway(t *testing.T, dependencies gateway.Dependencies) *mcp.ClientSession {
@@ -32,10 +33,9 @@ func connectGateway(t *testing.T, dependencies gateway.Dependencies) *mcp.Client
 	session, err := client.Connect(t.Context(), &mcp.StreamableClientTransport{
 		Endpoint:             server.URL + "/mcp",
 		DisableStandaloneSSE: true,
-		HTTPClient: &http.Client{Transport: bearerTransport{
-			Token: "valid-token",
-			Base:  http.DefaultTransport,
-		}},
+		HTTPClient: oauth2.NewClient(t.Context(), oauth2.StaticTokenSource(&oauth2.Token{
+			AccessToken: "valid-token",
+		})),
 	}, nil)
 	if err != nil {
 		t.Fatalf("connect to MCP gateway: %v", err)
@@ -426,17 +426,6 @@ type rejectingIdentity struct{}
 
 func (rejectingIdentity) Verify(context.Context, string) (gateway.TrustedIdentity, error) {
 	return gateway.TrustedIdentity{}, errors.New("token rejected")
-}
-
-type bearerTransport struct {
-	Token string
-	Base  http.RoundTripper
-}
-
-func (transport bearerTransport) RoundTrip(request *http.Request) (*http.Response, error) {
-	clone := request.Clone(request.Context())
-	clone.Header.Set("Authorization", "Bearer "+transport.Token)
-	return transport.Base.RoundTrip(clone)
 }
 
 type capturingPolicy struct {

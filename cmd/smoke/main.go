@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"golang.org/x/oauth2"
 )
 
 func main() {
@@ -90,10 +91,9 @@ func callCoffeeStation(ctx context.Context, endpoint, token string, meta mcp.Met
 	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{
 		Endpoint:             endpoint,
 		DisableStandaloneSSE: true,
-		HTTPClient: &http.Client{Transport: bearerTransport{
-			Token: token,
-			Base:  http.DefaultTransport,
-		}},
+		HTTPClient: oauth2.NewClient(ctx, oauth2.StaticTokenSource(&oauth2.Token{
+			AccessToken: token,
+		})),
 	}, nil)
 	if err != nil {
 		log.Fatalf("connect to authenticated gateway: %v", err)
@@ -154,17 +154,6 @@ func readClaims(token string) tokenClaims {
 		log.Fatalf("parse access token claims: %v", err)
 	}
 	return claims
-}
-
-type bearerTransport struct {
-	Token string
-	Base  http.RoundTripper
-}
-
-func (transport bearerTransport) RoundTrip(request *http.Request) (*http.Response, error) {
-	clone := request.Clone(request.Context())
-	clone.Header.Set("Authorization", "Bearer "+transport.Token)
-	return transport.Base.RoundTrip(clone)
 }
 
 func environment(name, fallback string) string {
