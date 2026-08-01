@@ -84,6 +84,25 @@ func TestConsumedApprovalRemainsSingleUseAfterAuthorityRestart(t *testing.T) {
 	}
 }
 
+func TestApprovalConsumptionFailsClosedWhenReplayStateCannotLoad(t *testing.T) {
+	now := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+	config := approvalauthority.Config{
+		SigningKey: []byte("test-signing-key-with-at-least-32-bytes"), IssuerCredential: "trusted-issuer-credential",
+		ConsumerCredential: "trusted-consumer-credential", OwnerSubject: "owner-subject-id", TTL: time.Minute,
+		Now: func() time.Time { return now }, StateFile: t.TempDir() + "/healthy-nonces",
+	}
+	healthy := httptest.NewServer(approvalauthority.NewHandler(config))
+	t.Cleanup(healthy.Close)
+	token := issueApproval(t, healthy, exactBinding())
+
+	config.StateFile = t.TempDir()
+	unavailable := httptest.NewServer(approvalauthority.NewHandler(config))
+	t.Cleanup(unavailable.Close)
+	if status := consumeApproval(t, unavailable, token, exactBinding()); status != http.StatusServiceUnavailable {
+		t.Fatalf("unavailable replay state consume status = %d, want %d", status, http.StatusServiceUnavailable)
+	}
+}
+
 func exactBinding() approvalauthority.Binding {
 	return approvalauthority.Binding{
 		Subject: "owner-subject-id",

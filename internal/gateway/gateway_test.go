@@ -749,7 +749,7 @@ type countingCalendarEvents struct{ count int }
 
 func (calendar *countingCalendarEvents) CreateEvent(_ context.Context, _ meeting.EventArguments) (meeting.Event, error) {
 	calendar.count++
-	return meeting.Event{EventID: "event-1", Created: calendar.count == 1, EventCount: 1}, nil
+	return meeting.Event{EventID: "event-1", Created: calendar.count == 1}, nil
 }
 
 type availableCalendar struct{}

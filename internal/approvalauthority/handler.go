@@ -65,7 +65,7 @@ func NewHandler(config Config) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(response http.ResponseWriter, _ *http.Request) {
 		response.Header().Set("Content-Type", "application/json")
-		if service.stateErr != nil {
+		if !service.stateAvailable() {
 			response.WriteHeader(http.StatusServiceUnavailable)
 			_, _ = response.Write([]byte(`{"status":"unavailable"}`))
 			return
@@ -89,7 +89,7 @@ func (service *authority) authenticate(credential string, next http.HandlerFunc)
 }
 
 func (service *authority) issue(response http.ResponseWriter, request *http.Request) {
-	if service.stateErr != nil {
+	if !service.stateAvailable() {
 		http.Error(response, "approval state unavailable", http.StatusServiceUnavailable)
 		return
 	}
@@ -130,6 +130,10 @@ func (service *authority) issue(response http.ResponseWriter, request *http.Requ
 }
 
 func (service *authority) consume(response http.ResponseWriter, request *http.Request) {
+	if !service.stateAvailable() {
+		http.Error(response, "approval state unavailable", http.StatusServiceUnavailable)
+		return
+	}
 	var input struct {
 		Approval string  `json:"approval"`
 		Binding  Binding `json:"binding"`
@@ -157,6 +161,10 @@ func (service *authority) consume(response http.ResponseWriter, request *http.Re
 	}
 	service.mu.Lock()
 	defer service.mu.Unlock()
+	if service.stateErr != nil {
+		http.Error(response, "approval state unavailable", http.StatusServiceUnavailable)
+		return
+	}
 	if _, replayed := service.used[approved.Nonce]; replayed {
 		http.Error(response, "Approval already consumed", http.StatusConflict)
 		return
@@ -168,6 +176,12 @@ func (service *authority) consume(response http.ResponseWriter, request *http.Re
 	}
 	service.used[approved.Nonce] = struct{}{}
 	response.WriteHeader(http.StatusNoContent)
+}
+
+func (service *authority) stateAvailable() bool {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	return service.stateErr == nil
 }
 
 func (service *authority) loadUsedNonces() error {

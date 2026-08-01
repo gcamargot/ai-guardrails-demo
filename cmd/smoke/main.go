@@ -193,12 +193,11 @@ func runMeetingFlow(ctx context.Context, webhookEndpoint string) (string, string
 
 	approvedResponse := telegramCommand(ctx, webhookEndpoint, 9001, "/approve "+submitted.MeetingProposal.ProposalID+" "+operation.Approval, http.StatusOK)
 	var first struct {
-		EventID    string `json:"event_id"`
-		Created    bool   `json:"created"`
-		EventCount int    `json:"event_count"`
+		EventID string `json:"event_id"`
+		Created bool   `json:"created"`
 	}
 	decodeJSON(approvedResponse, &first, "approved event")
-	if first.EventID == "" || !first.Created || first.EventCount != 1 {
+	if first.EventID == "" || !first.Created {
 		log.Fatalf("first approved event = %#v", first)
 	}
 	retryReviewResponse := telegramCommand(ctx, webhookEndpoint, 9001, "/review "+submitted.MeetingProposal.ProposalID, http.StatusOK)
@@ -211,12 +210,11 @@ func runMeetingFlow(ctx context.Context, webhookEndpoint string) (string, string
 	}
 	retryResponse := telegramCommand(ctx, webhookEndpoint, 9001, "/approve "+submitted.MeetingProposal.ProposalID+" "+retryOperation.Approval, http.StatusOK)
 	var retry struct {
-		EventID    string `json:"event_id"`
-		Created    bool   `json:"created"`
-		EventCount int    `json:"event_count"`
+		EventID string `json:"event_id"`
+		Created bool   `json:"created"`
 	}
 	decodeJSON(retryResponse, &retry, "retried event")
-	if retry.EventID != first.EventID || retry.Created || retry.EventCount != 1 {
+	if retry.EventID != first.EventID || retry.Created {
 		log.Fatalf("idempotent retry = %#v, first = %#v", retry, first)
 	}
 	return submitted.MeetingProposal.ProposalID, first.EventID

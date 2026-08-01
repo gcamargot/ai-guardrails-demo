@@ -256,7 +256,7 @@ func (gateway *capturingMeetingGateway) ReviewProposal(_ context.Context, _ tele
 func (gateway *capturingMeetingGateway) ApproveProposal(_ context.Context, _ telegramadapter.TrustedTelegramIdentity, id meeting.ProposalID, _ meeting.ApprovalToken) (meeting.Event, error) {
 	gateway.approved = id
 	gateway.effects++
-	return meeting.Event{EventID: "event-1", Created: true, EventCount: 1}, nil
+	return meeting.Event{EventID: "event-1", Created: true}, nil
 }
 
 func (gateway *capturingMeetingGateway) DenyProposal(_ context.Context, _ telegramadapter.TrustedTelegramIdentity, id meeting.ProposalID, _ meeting.ApprovalToken) (meeting.Denial, error) {

@@ -41,9 +41,8 @@ type EventArguments struct {
 }
 
 type Event struct {
-	EventID    string `json:"event_id"`
-	Created    bool   `json:"created"`
-	EventCount int    `json:"event_count"`
+	EventID string `json:"event_id"`
+	Created bool   `json:"created"`
 }
 
 type Denial struct {

@@ -21,7 +21,7 @@ func TestApprovedRequestRetriesCreateAtMostOneCalendarEvent(t *testing.T) {
 	}
 	first := createEvent(t, server, arguments)
 	second := createEvent(t, server, arguments)
-	if first.EventID != "demo-event-1" || !first.Created || first.EventCount != 1 || second.EventID != first.EventID || second.Created || second.EventCount != 1 {
+	if first.EventID != "demo-event-1" || !first.Created || second.EventID != first.EventID || second.Created {
 		t.Fatalf("first=%#v second=%#v", first, second)
 	}
 }

@@ -392,7 +392,7 @@ func newMCPServer(deps Dependencies, securityContext SecurityContext) *mcp.Serve
 		if !retry {
 			deps.Proposals.CompleteApproval(input.ProposalID)
 		}
-		if event.EventID == "" || event.EventCount < 1 {
+		if event.EventID == "" {
 			result.SetError(errors.New("calendar returned an invalid event"))
 			return result, meeting.Event{}, nil
 		}
