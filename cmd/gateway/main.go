@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/nahtao97/agent-tool-guardrails/internal/approvalauthority"
+	"github.com/nahtao97/agent-tool-guardrails/internal/auditclient"
 	"github.com/nahtao97/agent-tool-guardrails/internal/calendarclient"
 	"github.com/nahtao97/agent-tool-guardrails/internal/coffeestationclient"
 	"github.com/nahtao97/agent-tool-guardrails/internal/envconfig"
@@ -17,6 +18,7 @@ import (
 	"github.com/nahtao97/agent-tool-guardrails/internal/oidcauth"
 	"github.com/nahtao97/agent-tool-guardrails/internal/opaclient"
 	"github.com/nahtao97/agent-tool-guardrails/internal/outlookclient"
+	"github.com/nahtao97/agent-tool-guardrails/internal/smartlockclient"
 	"github.com/nahtao97/agent-tool-guardrails/internal/vaultclient"
 )
 
@@ -34,6 +36,10 @@ func main() {
 	outlookCredential, err := vault.OutlookCredential(context.Background())
 	if err != nil {
 		log.Fatalf("initialize Outlook credential: %v", err)
+	}
+	smartLockCredential, err := vault.SmartLockCredential(context.Background())
+	if err != nil {
+		log.Fatalf("initialize smart-lock credential: %v", err)
 	}
 	authenticator, err := oidcauth.New(context.Background(), oidcauth.Config{
 		Issuer:          envconfig.Must("OIDC_ISSUER"),
@@ -56,6 +62,8 @@ func main() {
 		),
 		Calendar:       calendar,
 		Outlook:        outlookclient.New(envconfig.Must("OUTLOOK_URL"), outlookCredential, httpClient),
+		SmartLock:      smartlockclient.New(envconfig.Must("SMART_LOCK_URL"), smartLockCredential, httpClient),
+		Audit:          auditclient.New(envconfig.Must("AUDIT_URL"), httpClient),
 		Proposals:      meeting.NewStore(),
 		Approvals:      approvalauthority.NewClient(envconfig.Must("APPROVAL_AUTHORITY_URL"), envconfig.Must("APPROVAL_CONSUMER_CREDENTIAL"), httpClient),
 		CalendarEvents: calendar,

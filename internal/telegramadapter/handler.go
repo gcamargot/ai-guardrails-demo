@@ -33,6 +33,23 @@ type OutlookQuery = outlook.Query
 type OutlookSearchQuery = outlook.SearchQuery
 type OutlookSearchResult = outlook.SearchResult
 type OutlookMessageView = outlook.MessageView
+type SmartLockDeviceID string
+
+type SmartLockArguments struct {
+	DeviceID SmartLockDeviceID `json:"device_id"`
+}
+
+type SmartLockOperation struct {
+	Tool      string                `json:"tool"`
+	Arguments SmartLockArguments    `json:"arguments"`
+	TraceID   string                `json:"trace_id"`
+	Approval  meeting.ApprovalToken `json:"approval"`
+}
+
+type SmartLockState struct {
+	DeviceID SmartLockDeviceID `json:"device_id"`
+	State    string            `json:"state"`
+}
 
 type AvailabilityGateway interface {
 	FindAvailability(context.Context, TrustedTelegramIdentity, AvailabilityQuery) ([]AvailableInterval, error)
@@ -50,6 +67,11 @@ type OutlookGateway interface {
 	ReadMessage(context.Context, TrustedTelegramIdentity, OutlookMessageID) (OutlookMessageView, error)
 }
 
+type SmartLockGateway interface {
+	ReviewUnlock(context.Context, TrustedTelegramIdentity, SmartLockDeviceID) (SmartLockOperation, error)
+	Unlock(context.Context, TrustedTelegramIdentity, SmartLockDeviceID, meeting.ApprovalToken) (SmartLockState, error)
+}
+
 type Config struct {
 	WebhookSecret     string
 	VerifiedUsers     map[TelegramUserID]Subject
@@ -59,6 +81,7 @@ type Config struct {
 	Availability      AvailabilityGateway
 	Meetings          MeetingGateway
 	Outlook           OutlookGateway
+	SmartLock         SmartLockGateway
 	AvailabilityLimit int
 	ProposalLimit     int
 	RateLimitWindow   time.Duration
@@ -135,6 +158,9 @@ type commandRouter struct {
 
 func (router commandRouter) Route(response http.ResponseWriter, request *http.Request, subject Subject, identity TrustedTelegramIdentity, command string) bool {
 	switch {
+	case strings.HasPrefix(command, "/review-unlock "), strings.HasPrefix(command, "/unlock "):
+		router.handleSmartLock(response, request, subject, identity, command)
+		return true
 	case strings.HasPrefix(command, "/outlook-search "):
 		router.handleOutlookSearch(response, request, subject, identity, command)
 		return true
@@ -150,6 +176,35 @@ func (router commandRouter) Route(response http.ResponseWriter, request *http.Re
 	default:
 		return false
 	}
+}
+
+func (router commandRouter) handleSmartLock(response http.ResponseWriter, request *http.Request, subject Subject, identity TrustedTelegramIdentity, command string) {
+	if subject != router.config.OwnerSubject || router.config.SmartLock == nil {
+		http.Error(response, "forbidden", http.StatusForbidden)
+		return
+	}
+	parts := strings.Fields(command)
+	if (parts[0] == "/review-unlock" && len(parts) != 2) || (parts[0] == "/unlock" && len(parts) != 3) {
+		http.Error(response, "review the exact smart-lock operation before unlocking", http.StatusBadRequest)
+		return
+	}
+	deviceID := SmartLockDeviceID(parts[1])
+	response.Header().Set("Content-Type", "application/json")
+	if parts[0] == "/review-unlock" {
+		operation, err := router.config.SmartLock.ReviewUnlock(request.Context(), identity, deviceID)
+		if err != nil {
+			http.Error(response, "smart-lock review failed", http.StatusBadGateway)
+			return
+		}
+		_ = json.NewEncoder(response).Encode(operation)
+		return
+	}
+	state, err := router.config.SmartLock.Unlock(request.Context(), identity, deviceID, meeting.ApprovalToken(parts[2]))
+	if err != nil {
+		http.Error(response, "smart-lock unlock failed", http.StatusBadGateway)
+		return
+	}
+	_ = json.NewEncoder(response).Encode(state)
 }
 
 func (router commandRouter) handleOutlookSearch(response http.ResponseWriter, request *http.Request, subject Subject, identity TrustedTelegramIdentity, command string) {

@@ -154,7 +154,7 @@ func (service *authority) consume(response http.ResponseWriter, request *http.Re
 	}
 	argumentHash, err := hashArguments(input.Binding.Arguments)
 	if err != nil || approved.Subject != input.Binding.Subject || approved.Actor != input.Binding.Actor ||
-		approved.Tool != input.Binding.Tool || approved.TraceID != input.Binding.TraceID ||
+		approved.Tool != input.Binding.Tool || (input.Binding.TraceID != "" && approved.TraceID != input.Binding.TraceID) ||
 		approved.ArgumentsHash != argumentHash || !service.config.Now().Before(time.Unix(approved.ExpiresAt, 0)) {
 		http.Error(response, "Approval denied", http.StatusForbidden)
 		return
@@ -175,6 +175,7 @@ func (service *authority) consume(response http.ResponseWriter, request *http.Re
 		return
 	}
 	service.used[approved.Nonce] = struct{}{}
+	response.Header().Set("X-Approval-Trace-ID", approved.TraceID)
 	response.WriteHeader(http.StatusNoContent)
 }
 
@@ -222,7 +223,27 @@ func (service *authority) persistNonce(nonce string) error {
 
 func (service *authority) validBinding(binding Binding) bool {
 	return len(service.config.SigningKey) >= 32 && binding.Subject == service.config.OwnerSubject &&
-		binding.Actor == "telegram-agent" && binding.Tool == "calendar.create_event" && binding.TraceID != "" && binding.Arguments != nil
+		binding.Actor == "telegram-agent" && binding.TraceID != "" && binding.Arguments != nil && validToolBinding(binding)
+}
+
+func validToolBinding(binding Binding) bool {
+	switch binding.Tool {
+	case "calendar.create_event":
+		return true
+	case "smart_lock.unlock":
+		encoded, err := json.Marshal(binding.Arguments)
+		if err != nil {
+			return false
+		}
+		var arguments struct {
+			DeviceID string `json:"device_id"`
+		}
+		decoder := json.NewDecoder(strings.NewReader(string(encoded)))
+		decoder.DisallowUnknownFields()
+		return decoder.Decode(&arguments) == nil && arguments.DeviceID == "demo-front-door"
+	default:
+		return false
+	}
 }
 
 func (service *authority) sign(payload []byte) string {

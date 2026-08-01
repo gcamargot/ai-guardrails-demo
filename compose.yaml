@@ -61,11 +61,14 @@ services:
       - |
         vault policy write calendar-reader /config/calendar-reader.hcl >/dev/null
         vault policy write outlook-reader /config/outlook-reader.hcl >/dev/null
+        vault policy write smart-lock-reader /config/smart-lock-reader.hcl >/dev/null
         vault kv put secret/calendar credential=demo-calendar-credential >/dev/null
         vault kv put secret/outlook credential=demo-outlook-credential >/dev/null
-        vault token create -field=token -policy=calendar-reader -policy=outlook-reader -no-default-policy > /tokens/gateway
+        vault kv put secret/smart-lock credential=demo-smart-lock-credential >/dev/null
+        vault token create -field=token -policy=calendar-reader -policy=outlook-reader -policy=smart-lock-reader -no-default-policy > /tokens/gateway
         vault token create -field=token -policy=calendar-reader -no-default-policy > /tokens/calendar
         vault token create -field=token -policy=outlook-reader -no-default-policy > /tokens/outlook
+        vault token create -field=token -policy=smart-lock-reader -no-default-policy > /tokens/smart-lock
     depends_on:
       vault:
         condition: service_healthy
@@ -124,6 +127,39 @@ services:
       timeout: 1s
       retries: 15
 
+  smart-lock:
+    build: .
+    command: /app/smart-lock
+    environment:
+      VAULT_TOKEN_FILE: /run/vault-token/smart-lock
+      VAULT_URL: http://vault:8200
+    depends_on:
+      vault-init:
+        condition: service_completed_successfully
+    networks:
+      - protected
+      - secrets
+      - observability
+    volumes:
+      - vault-tokens:/run/vault-token:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8088/healthz"]
+      interval: 2s
+      timeout: 1s
+      retries: 15
+
+  audit:
+    build: .
+    command: /app/audit
+    networks:
+      - audit
+      - observability
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8089/healthz"]
+      interval: 2s
+      timeout: 1s
+      retries: 15
+
   approval-state-init:
     image: alpine:3.22
     command: ["sh", "-c", "chown -R 10001:10001 /state"]
@@ -140,6 +176,7 @@ services:
       APPROVAL_CONSUMER_CREDENTIAL: demo-approval-consumer-credential
       APPROVAL_SIGNING_KEY: demo-approval-signing-key-32-bytes-minimum
       APPROVAL_STATE_FILE: /state/consumed-nonces
+      APPROVAL_TTL: 5s
       OWNER_SUBJECT: owner-subject-id
     networks:
       - approval
@@ -158,6 +195,7 @@ services:
     build: .
     command: /app/gateway
     environment:
+      AUDIT_URL: http://audit:8089
       APPROVAL_AUTHORITY_URL: http://approval-authority:8086
       APPROVAL_CONSUMER_CREDENTIAL: demo-approval-consumer-credential
       AUTH_CHANNEL: streamable-http
@@ -166,11 +204,15 @@ services:
       OPA_URL: http://opa:8181
       OIDC_AUDIENCE: agent-tools-gateway
       OIDC_ISSUER: http://keycloak:8080/realms/agent-tools
+      OIDC_OPTIONAL_SCOPES: smart_lock.write
       OIDC_REQUIRED_SCOPES: coffee_station.read
       OUTLOOK_URL: http://outlook:8087
+      SMART_LOCK_URL: http://smart-lock:8088
       VAULT_TOKEN_FILE: /run/vault-token/gateway
       VAULT_URL: http://vault:8200
     depends_on:
+      audit:
+        condition: service_healthy
       approval-authority:
         condition: service_healthy
       calendar:
@@ -182,6 +224,8 @@ services:
       opa:
         condition: service_started
       outlook:
+        condition: service_healthy
+      smart-lock:
         condition: service_healthy
       vault-init:
         condition: service_completed_successfully
@@ -194,6 +238,7 @@ services:
       - protected
       - secrets
       - approval
+      - audit
     volumes:
       - vault-tokens:/run/vault-token:ro
     healthcheck:
@@ -206,6 +251,7 @@ services:
     build: .
     command: /app/gateway
     environment:
+      AUDIT_URL: http://audit:8089
       APPROVAL_AUTHORITY_URL: http://approval-authority:8086
       APPROVAL_CONSUMER_CREDENTIAL: demo-approval-consumer-credential
       AUTH_CHANNEL: telegram
@@ -214,12 +260,15 @@ services:
       OPA_URL: http://opa:8181
       OIDC_AUDIENCE: agent-tools-gateway
       OIDC_ISSUER: http://keycloak:8080/realms/agent-tools
-      OIDC_OPTIONAL_SCOPES: calendar.meeting.approve,outlook.mail.read
+      OIDC_OPTIONAL_SCOPES: calendar.meeting.approve,outlook.mail.read,smart_lock.write
       OIDC_REQUIRED_SCOPES: calendar.free_busy.read,calendar.meeting.propose
       OUTLOOK_URL: http://outlook:8087
+      SMART_LOCK_URL: http://smart-lock:8088
       VAULT_TOKEN_FILE: /run/vault-token/gateway
       VAULT_URL: http://vault:8200
     depends_on:
+      audit:
+        condition: service_healthy
       approval-authority:
         condition: service_healthy
       calendar:
@@ -232,6 +281,8 @@ services:
         condition: service_started
       outlook:
         condition: service_healthy
+      smart-lock:
+        condition: service_healthy
       vault-init:
         condition: service_completed_successfully
     networks:
@@ -241,6 +292,7 @@ services:
       - protected
       - secrets
       - approval
+      - audit
     volumes:
       - vault-tokens:/run/vault-token:ro
     healthcheck:
@@ -303,7 +355,9 @@ services:
     build: .
     command: /app/smoke
     environment:
+      AUDIT_RECORDS_URL: http://audit:8089/records
       CALENDAR_METRICS_URL: http://calendar:8083/metrics
+      SMART_LOCK_METRICS_URL: http://smart-lock:8088/metrics
       GATEWAY_MCP_URL: http://gateway:8080/mcp
       KEYCLOAK_TOKEN_URL: http://keycloak:8080/realms/agent-tools/protocol/openid-connect/token
       TELEGRAM_GATEWAY_MCP_URL: http://telegram-gateway:8080/mcp
@@ -317,6 +371,7 @@ services:
       - public
       - identity
       - observability
+      - audit
     profiles:
       - test
 
@@ -335,6 +390,8 @@ networks:
   approval:
     internal: true
   observability:
+    internal: true
+  audit:
     internal: true
 
 volumes:

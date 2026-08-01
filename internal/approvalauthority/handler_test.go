@@ -62,6 +62,61 @@ func TestArgumentMismatchedAndExpiredApprovalsAreDenied(t *testing.T) {
 	}
 }
 
+func TestSmartLockApprovalReturnsBoundTraceAndRejectsMismatchExpiryAndReplay(t *testing.T) {
+	now := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+	server := httptest.NewServer(approvalauthority.NewHandler(approvalauthority.Config{
+		SigningKey:         []byte("test-signing-key-with-at-least-32-bytes"),
+		IssuerCredential:   "trusted-issuer-credential",
+		ConsumerCredential: "trusted-consumer-credential",
+		OwnerSubject:       "owner-subject-id",
+		TTL:                time.Minute,
+		Now:                func() time.Time { return now },
+		StateFile:          t.TempDir() + "/nonces",
+	}))
+	t.Cleanup(server.Close)
+	issuer := approvalauthority.NewClient(server.URL, "trusted-issuer-credential", server.Client())
+	consumer := approvalauthority.NewClient(server.URL, "trusted-consumer-credential", server.Client())
+	binding := approvalauthority.Binding{
+		Subject: "owner-subject-id", Actor: "telegram-agent", Tool: "smart_lock.unlock",
+		Arguments: map[string]any{"device_id": "demo-front-door"}, TraceID: "smart-lock-trace-42",
+	}
+
+	mismatchToken, err := issuer.Issue(t.Context(), binding)
+	if err != nil {
+		t.Fatalf("issue mismatch Approval: %v", err)
+	}
+	mismatch := binding
+	mismatch.TraceID = ""
+	mismatch.Arguments = map[string]any{"device_id": "garage-door"}
+	if _, err := consumer.ConsumeExact(t.Context(), mismatchToken, mismatch); err == nil {
+		t.Fatal("argument-mismatched smart-lock Approval was consumed")
+	}
+
+	expiredToken, err := issuer.Issue(t.Context(), binding)
+	if err != nil {
+		t.Fatalf("issue expiring Approval: %v", err)
+	}
+	now = now.Add(2 * time.Minute)
+	withoutTrace := binding
+	withoutTrace.TraceID = ""
+	if _, err := consumer.ConsumeExact(t.Context(), expiredToken, withoutTrace); err == nil {
+		t.Fatal("expired smart-lock Approval was consumed")
+	}
+
+	now = now.Add(-2 * time.Minute)
+	validToken, err := issuer.Issue(t.Context(), binding)
+	if err != nil {
+		t.Fatalf("issue valid Approval: %v", err)
+	}
+	consumed, err := consumer.ConsumeExact(t.Context(), validToken, withoutTrace)
+	if err != nil || consumed.TraceID != "smart-lock-trace-42" {
+		t.Fatalf("consume exact smart-lock Approval: trace=%q err=%v", consumed.TraceID, err)
+	}
+	if _, err := consumer.ConsumeExact(t.Context(), validToken, withoutTrace); err == nil {
+		t.Fatal("replayed smart-lock Approval was consumed")
+	}
+}
+
 func TestConsumedApprovalRemainsSingleUseAfterAuthorityRestart(t *testing.T) {
 	now := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
 	stateFile := t.TempDir() + "/consumed-nonces"

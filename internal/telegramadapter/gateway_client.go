@@ -2,6 +2,8 @@ package telegramadapter
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -174,6 +176,69 @@ func (client *GatewayClient) DenyProposal(ctx context.Context, identity TrustedT
 		return meeting.Denial{}, err
 	}
 	return denial, nil
+}
+
+func (client *GatewayClient) ReviewUnlock(ctx context.Context, identity TrustedTelegramIdentity, deviceID SmartLockDeviceID) (SmartLockOperation, error) {
+	if identity.Subject != client.config.OwnerSubject || deviceID != "demo-front-door" || client.config.Approvals == nil {
+		return SmartLockOperation{}, errors.New("only the Owner can review the fixed smart-lock operation")
+	}
+	session, err := client.connectWithScopes(ctx, identity, []string{"smart_lock.write"})
+	if err != nil {
+		return SmartLockOperation{}, err
+	}
+	defer session.Close()
+	listed, err := session.ListTools(ctx, nil)
+	if err != nil {
+		return SmartLockOperation{}, fmt.Errorf("discover smart-lock Tool: %w", err)
+	}
+	found := false
+	for _, tool := range listed.Tools {
+		found = found || tool.Name == "smart_lock.unlock"
+	}
+	if !found {
+		return SmartLockOperation{}, errors.New("smart-lock Tool is not authorized for this turn")
+	}
+	traceBytes := make([]byte, 16)
+	if _, err := rand.Read(traceBytes); err != nil {
+		return SmartLockOperation{}, fmt.Errorf("create smart-lock trace: %w", err)
+	}
+	operation := SmartLockOperation{
+		Tool: "smart_lock.unlock", Arguments: SmartLockArguments{DeviceID: deviceID}, TraceID: "smart-lock-trace-" + hex.EncodeToString(traceBytes),
+	}
+	approval, err := client.config.Approvals.Issue(ctx, approvalauthority.Binding{
+		Subject: string(identity.Subject), Actor: string(identity.Actor), Tool: operation.Tool,
+		Arguments: operation.Arguments, TraceID: operation.TraceID,
+	})
+	if err != nil {
+		return SmartLockOperation{}, fmt.Errorf("issue exact smart-lock Approval: %w", err)
+	}
+	operation.Approval = meeting.ApprovalToken(approval)
+	return operation, nil
+}
+
+func (client *GatewayClient) Unlock(ctx context.Context, identity TrustedTelegramIdentity, deviceID SmartLockDeviceID, approval meeting.ApprovalToken) (SmartLockState, error) {
+	if identity.Subject != client.config.OwnerSubject || deviceID != "demo-front-door" || approval == "" {
+		return SmartLockState{}, errors.New("only the Owner can unlock the fixed demo smart lock")
+	}
+	session, err := client.connectWithScopes(ctx, identity, []string{"smart_lock.write"})
+	if err != nil {
+		return SmartLockState{}, err
+	}
+	defer session.Close()
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "smart_lock.unlock", Arguments: map[string]any{"device_id": deviceID, "approval": string(approval)},
+	})
+	if err != nil || result.IsError {
+		return SmartLockState{}, toolError("unlock smart lock", result, err)
+	}
+	var state SmartLockState
+	if err := decodeStructured(result.StructuredContent, &state); err != nil {
+		return SmartLockState{}, err
+	}
+	if state.DeviceID != deviceID || state.State != "unlocked" {
+		return SmartLockState{}, errors.New("gateway returned invalid smart-lock state")
+	}
+	return state, nil
 }
 
 func (client *GatewayClient) SearchMessages(ctx context.Context, identity TrustedTelegramIdentity, query OutlookSearchQuery) ([]OutlookSearchResult, error) {

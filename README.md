@@ -46,6 +46,12 @@ An External Subject uses `/propose <start> <end> <contact> <reason>` to create o
 
 Consumed Approval nonces are fsync'd to a local Compose volume and reloaded after Approval Authority restarts. Proposal resolution is atomic in the single gateway process, while rate-limit counters and calendar idempotency records remain local. Redis with atomic scripts and replicated state is the documented production evolution. Checked-in Approval credentials and signing material are synthetic Compose fixtures, never model inputs or production secrets.
 
+## Authorized simulated Smart Lock
+
+The Owner first sends `/review-unlock demo-front-door` through the authenticated Telegram adapter. That explicit command requests the optional `smart_lock.write` Turn Capability and returns the exact `smart_lock.unlock` operation plus a short-lived Approval. `/unlock demo-front-door <approval>` can produce the Effect only when Subject, Telegram Actor, Telegram Channel, Turn Capability, fixed device and signed Approval all still match. External and Unknown Subjects, coding clients, missing capabilities, changed arguments, expired Approvals and replayed Approvals fail before the isolated adapter.
+
+The adapter independently accepts only `demo-front-door`, validates the semantic `locked -> unlocked` transition and reads its synthetic downstream credential from Vault. The gateway writes typed audit records to an isolated collector before an authorized Effect. Records correlate `decision_id` and the Approval-bound trace where available, classify the Subject without storing its identifier, and have no field capable of carrying the Approval or downstream credentials.
+
 ## Read-only Outlook controls
 
 Only the Owner through the Telegram Actor and Channel can discover or execute `outlook.search_messages` and `outlook.read_message`. The optional Keycloak scope is requested only while handling an explicit command; it is neither a default scope nor persistent interaction state. Search accepts an exact query of at most 100 characters and returns at most five metadata-only matches. Read accepts one strict demo message ID.

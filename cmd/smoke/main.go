@@ -24,6 +24,8 @@ func main() {
 	telegramGatewayEndpoint := environment("TELEGRAM_GATEWAY_MCP_URL", "http://127.0.0.1:8080/mcp")
 	telegramWebhookEndpoint := environment("TELEGRAM_WEBHOOK_URL", "http://127.0.0.1:8084/telegram/webhook")
 	calendarMetricsEndpoint := environment("CALENDAR_METRICS_URL", "http://127.0.0.1:8083/metrics")
+	smartLockMetricsEndpoint := environment("SMART_LOCK_METRICS_URL", "http://127.0.0.1:8088/metrics")
+	auditRecordsEndpoint := environment("AUDIT_RECORDS_URL", "http://127.0.0.1:8089/records")
 	tokenEndpoint := environment("KEYCLOAK_TOKEN_URL", "http://127.0.0.1:8082/realms/agent-tools/protocol/openid-connect/token")
 	if status := unauthenticatedStatus(ctx, endpoint); status != http.StatusUnauthorized {
 		log.Fatalf("unauthenticated MCP status = %d, want %d", status, http.StatusUnauthorized)
@@ -64,9 +66,10 @@ func main() {
 	_ = limitedAvailability.Body.Close()
 	outlookMessageID := runOutlookFlow(ctx, tokenEndpoint, telegramGatewayEndpoint, telegramWebhookEndpoint, calendarMetricsEndpoint)
 	proposalID, eventID := runMeetingFlow(ctx, telegramWebhookEndpoint)
+	lockTrace := runSmartLockFlow(ctx, tokenEndpoint, endpoint, telegramGatewayEndpoint, telegramWebhookEndpoint, smartLockMetricsEndpoint, auditRecordsEndpoint)
 
 	fmt.Printf(
-		"PASS subject=%s actors=%s,%s telegram_decision=%v coding_decision=%v available_intervals=%d outlook_message=%s outlook_effect_count=0 proposal=%s event=%s event_count=1 policy_revision=ticket-05\n",
+		"PASS subject=%s actors=%s,%s telegram_decision=%v coding_decision=%v available_intervals=%d outlook_message=%s outlook_effect_count=0 proposal=%s event=%s event_count=1 smart_lock_trace=%s unlock_count=1 policy_revision=ticket-06\n",
 		telegramClaims.Subject,
 		telegramClaims.Actor,
 		codingClaims.Actor,
@@ -76,7 +79,140 @@ func main() {
 		outlookMessageID,
 		proposalID,
 		eventID,
+		lockTrace,
 	)
+}
+
+func runSmartLockFlow(ctx context.Context, tokenEndpoint, generalGatewayEndpoint, telegramGatewayEndpoint, webhookEndpoint, metricsEndpoint, auditEndpoint string) string {
+	defaultOwner := obtainToken(ctx, tokenEndpoint, "telegram-agent", "telegram-demo-secret", "owner", "owner-demo-password")
+	owner := obtainTokenWithScopes(ctx, tokenEndpoint, "telegram-agent", "telegram-demo-secret", "owner", "owner-demo-password", []string{"smart_lock.write"})
+	external := obtainTokenWithScopes(ctx, tokenEndpoint, "telegram-agent", "telegram-demo-secret", "external-alice", "external-demo-password", []string{"smart_lock.write"})
+	coding := obtainTokenWithScopes(ctx, tokenEndpoint, "coding-agent", "coding-demo-secret", "owner", "owner-demo-password", []string{"smart_lock.write"})
+	verifySmartLockAccess(ctx, telegramGatewayEndpoint, defaultOwner, false)
+	verifySmartLockAccess(ctx, telegramGatewayEndpoint, external, false)
+	verifySmartLockAccess(ctx, generalGatewayEndpoint, coding, false)
+	verifySmartLockAccess(ctx, telegramGatewayEndpoint, owner, true)
+	if response := telegramCommand(ctx, webhookEndpoint, 4242, "/review-unlock demo-front-door", http.StatusForbidden); response != nil {
+		response.Body.Close()
+	}
+
+	expiring := reviewSmartLock(ctx, webhookEndpoint)
+	time.Sleep(6 * time.Second)
+	expired := telegramCommand(ctx, webhookEndpoint, 9001, "/unlock demo-front-door "+expiring.Approval, http.StatusBadGateway)
+	expired.Body.Close()
+
+	operation := reviewSmartLock(ctx, webhookEndpoint)
+	session := connectMCP(ctx, telegramGatewayEndpoint, owner)
+	mismatch, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "smart_lock.unlock", Arguments: map[string]any{"device_id": "garage-door", "approval": operation.Approval},
+	})
+	_ = session.Close()
+	if err != nil || !mismatch.IsError {
+		log.Fatalf("changed smart-lock arguments were not denied: result=%#v err=%v", mismatch, err)
+	}
+	unlocked := telegramCommand(ctx, webhookEndpoint, 9001, "/unlock demo-front-door "+operation.Approval, http.StatusOK)
+	var state struct {
+		DeviceID string `json:"device_id"`
+		State    string `json:"state"`
+	}
+	decodeJSON(unlocked, &state, "smart-lock state")
+	if state.DeviceID != "demo-front-door" || state.State != "unlocked" {
+		log.Fatalf("unexpected smart-lock state: %#v", state)
+	}
+	replay := telegramCommand(ctx, webhookEndpoint, 9001, "/unlock demo-front-door "+operation.Approval, http.StatusBadGateway)
+	replay.Body.Close()
+	if count := smartLockUnlockCount(ctx, metricsEndpoint); count != 1 {
+		log.Fatalf("smart-lock unlock_count = %d, want 1", count)
+	}
+	verifySmartLockAudit(ctx, auditEndpoint, operation.TraceID, operation.Approval)
+	return operation.TraceID
+}
+
+type reviewedSmartLock struct {
+	Tool      string `json:"tool"`
+	Arguments struct {
+		DeviceID string `json:"device_id"`
+	} `json:"arguments"`
+	TraceID  string `json:"trace_id"`
+	Approval string `json:"approval"`
+}
+
+func reviewSmartLock(ctx context.Context, webhookEndpoint string) reviewedSmartLock {
+	response := telegramCommand(ctx, webhookEndpoint, 9001, "/review-unlock demo-front-door", http.StatusOK)
+	var operation reviewedSmartLock
+	decodeJSON(response, &operation, "exact smart-lock operation")
+	if operation.Tool != "smart_lock.unlock" || operation.Arguments.DeviceID != "demo-front-door" || operation.TraceID == "" || operation.Approval == "" {
+		log.Fatalf("invalid exact smart-lock operation: %#v", operation)
+	}
+	return operation
+}
+
+func verifySmartLockAccess(ctx context.Context, endpoint, token string, wantDiscovery bool) {
+	session := connectMCP(ctx, endpoint, token)
+	defer session.Close()
+	listed, err := session.ListTools(ctx, nil)
+	if err != nil {
+		log.Fatalf("list smart-lock Tools: %v", err)
+	}
+	found := false
+	for _, tool := range listed.Tools {
+		found = found || tool.Name == "smart_lock.unlock"
+	}
+	if found != wantDiscovery {
+		log.Fatalf("smart-lock discovery = %v, want %v", found, wantDiscovery)
+	}
+	if !wantDiscovery {
+		result, err := session.CallTool(ctx, &mcp.CallToolParams{
+			Name: "smart_lock.unlock", Arguments: map[string]any{"device_id": "demo-front-door", "approval": "untrusted-approval"},
+		})
+		if err != nil || !result.IsError {
+			log.Fatalf("unauthorized smart-lock Tool Call was not denied: result=%#v err=%v", result, err)
+		}
+	}
+}
+
+func smartLockUnlockCount(ctx context.Context, endpoint string) int {
+	request, _ := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		log.Fatalf("read smart-lock metrics: %v", err)
+	}
+	defer response.Body.Close()
+	var metrics struct {
+		UnlockCount int `json:"unlock_count"`
+	}
+	if response.StatusCode != http.StatusOK || json.NewDecoder(response.Body).Decode(&metrics) != nil {
+		log.Fatalf("smart-lock metrics returned HTTP %d", response.StatusCode)
+	}
+	return metrics.UnlockCount
+}
+
+func verifySmartLockAudit(ctx context.Context, endpoint, traceID, approval string) {
+	request, _ := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		log.Fatalf("read audit records: %v", err)
+	}
+	defer response.Body.Close()
+	var records []map[string]any
+	if response.StatusCode != http.StatusOK || json.NewDecoder(response.Body).Decode(&records) != nil {
+		log.Fatalf("audit records returned HTTP %d", response.StatusCode)
+	}
+	encoded, _ := json.Marshal(records)
+	if strings.Contains(string(encoded), approval) || strings.Contains(string(encoded), "owner-subject-id") {
+		log.Fatalf("audit leaked Approval or Subject identifier: %s", encoded)
+	}
+	foundAllow, foundDeny := false, false
+	for _, record := range records {
+		if record["tool"] != "smart_lock.unlock" || record["decision_id"] == "" {
+			continue
+		}
+		foundAllow = foundAllow || (record["outcome"] == "allow" && record["trace_id"] == traceID)
+		foundDeny = foundDeny || record["outcome"] == "deny"
+	}
+	if !foundAllow || !foundDeny {
+		log.Fatalf("missing correlated smart-lock allow/deny audit: %#v", records)
+	}
 }
 
 func runOutlookFlow(ctx context.Context, tokenEndpoint, gatewayEndpoint, webhookEndpoint, statsEndpoint string) string {
@@ -198,7 +334,7 @@ func callCoffeeStation(ctx context.Context, endpoint, token string, meta mcp.Met
 	if !ok || output["state"] != "ready" {
 		log.Fatalf("unexpected authenticated result: %#v", result.StructuredContent)
 	}
-	if result.Meta["policy_revision"] != "ticket-05" {
+	if result.Meta["policy_revision"] != "ticket-06" {
 		log.Fatalf("unexpected policy revision: %v", result.Meta["policy_revision"])
 	}
 	return result.Meta["decision_id"]

@@ -529,6 +529,156 @@ func TestApprovalMustBeExactActiveAndSingleUseBeforeCalendarEffect(t *testing.T)
 	}
 }
 
+func TestOwnerTelegramTurnWithExactApprovalUnlocksFixedDemoLockOnce(t *testing.T) {
+	now := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+	authorityServer := httptest.NewServer(approvalauthority.NewHandler(approvalauthority.Config{
+		SigningKey:         []byte("test-signing-key-with-at-least-32-bytes"),
+		IssuerCredential:   "trusted-issuer-credential",
+		ConsumerCredential: "trusted-consumer-credential",
+		OwnerSubject:       "owner-subject-id",
+		TTL:                time.Minute,
+		Now:                func() time.Time { return now },
+		StateFile:          t.TempDir() + "/nonces",
+	}))
+	t.Cleanup(authorityServer.Close)
+	issuer := approvalauthority.NewClient(authorityServer.URL, "trusted-issuer-credential", authorityServer.Client())
+	consumer := approvalauthority.NewClient(authorityServer.URL, "trusted-consumer-credential", authorityServer.Client())
+	binding := approvalauthority.Binding{
+		Subject: "owner-subject-id", Actor: "telegram-agent", Tool: "smart_lock.unlock",
+		Arguments: map[string]any{"device_id": "demo-front-door"}, TraceID: "smart-lock-trace-1",
+	}
+	approval, err := issuer.Issue(t.Context(), binding)
+	if err != nil {
+		t.Fatalf("issue smart-lock Approval: %v", err)
+	}
+	lock := &countingSmartLock{}
+	audit := &capturingAudit{}
+	session := connectGateway(t, gateway.Dependencies{
+		Identity: fixedIdentity{Subject: "owner-subject-id", Actor: "telegram-agent", TurnCapabilities: []gateway.Capability{"smart_lock.write"}},
+		Channel:  "telegram", Policy: smartLockPolicy{}, CoffeeStation: readyCoffeeStation{}, Approvals: consumer, SmartLock: lock, Audit: audit,
+	})
+	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+		Name: "smart_lock.unlock", Arguments: map[string]any{"device_id": "demo-front-door", "approval": approval},
+	})
+	if err != nil || result.IsError {
+		t.Fatalf("unlock fixed demo lock: result=%#v err=%v", result, err)
+	}
+	output, ok := result.StructuredContent.(map[string]any)
+	if !ok || output["device_id"] != "demo-front-door" || output["state"] != "unlocked" || lock.effects != 1 {
+		t.Fatalf("smart-lock result=%#v effects=%d", result.StructuredContent, lock.effects)
+	}
+}
+
+func TestUnauthorizedContextsCannotDiscoverOrReachSmartLockDependencies(t *testing.T) {
+	tests := []struct {
+		name      string
+		identity  fixedIdentity
+		channel   gateway.Channel
+		deviceID  string
+		discovers bool
+	}{
+		{name: "External Subject", identity: fixedIdentity{Subject: "external-alice-subject-id", Actor: "telegram-agent", TurnCapabilities: []gateway.Capability{"smart_lock.write"}}, channel: "telegram", deviceID: "demo-front-door"},
+		{name: "Unknown Subject", identity: fixedIdentity{Subject: "unknown", Actor: "telegram-agent", TurnCapabilities: []gateway.Capability{"smart_lock.write"}}, channel: "telegram", deviceID: "demo-front-door"},
+		{name: "non-Telegram Actor", identity: fixedIdentity{Subject: "owner-subject-id", Actor: "coding-agent", TurnCapabilities: []gateway.Capability{"smart_lock.write"}}, channel: "telegram", deviceID: "demo-front-door"},
+		{name: "missing capability", identity: fixedIdentity{Subject: "owner-subject-id", Actor: "telegram-agent"}, channel: "telegram", deviceID: "demo-front-door"},
+		{name: "different device", identity: fixedIdentity{Subject: "owner-subject-id", Actor: "telegram-agent", TurnCapabilities: []gateway.Capability{"smart_lock.write"}}, channel: "telegram", deviceID: "garage-door", discovers: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			session := connectGateway(t, gateway.Dependencies{
+				Identity: test.identity, Channel: test.channel, Policy: smartLockPolicy{}, CoffeeStation: readyCoffeeStation{},
+				Approvals: unreachableApprovalConsumer{t: t}, SmartLock: unreachableSmartLock{t: t}, Audit: &capturingAudit{},
+			})
+			listed, err := session.ListTools(t.Context(), nil)
+			if err != nil {
+				t.Fatalf("list Tools: %v", err)
+			}
+			found := false
+			for _, tool := range listed.Tools {
+				if tool.Name == "smart_lock.unlock" {
+					found = true
+				}
+			}
+			if found != test.discovers {
+				t.Fatalf("smart_lock.unlock discovery = %v, want %v", found, test.discovers)
+			}
+			result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+				Name: "smart_lock.unlock", Arguments: map[string]any{"device_id": test.deviceID, "approval": "must-not-be-consumed"},
+			})
+			if err != nil {
+				t.Fatalf("call denied smart-lock Tool: %v", err)
+			}
+			if !result.IsError {
+				t.Fatal("unauthorized smart-lock Tool Call succeeded")
+			}
+		})
+	}
+}
+
+func TestSmartLockAllowAndApprovalDenyProduceCorrelatedNonSensitiveAudit(t *testing.T) {
+	now := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+	authorityServer := httptest.NewServer(approvalauthority.NewHandler(approvalauthority.Config{
+		SigningKey: []byte("test-signing-key-with-at-least-32-bytes"), IssuerCredential: "trusted-issuer-credential",
+		ConsumerCredential: "trusted-consumer-credential", OwnerSubject: "owner-subject-id", TTL: time.Minute,
+		Now: func() time.Time { return now }, StateFile: t.TempDir() + "/nonces",
+	}))
+	t.Cleanup(authorityServer.Close)
+	issuer := approvalauthority.NewClient(authorityServer.URL, "trusted-issuer-credential", authorityServer.Client())
+	consumer := approvalauthority.NewClient(authorityServer.URL, "trusted-consumer-credential", authorityServer.Client())
+	binding := approvalauthority.Binding{
+		Subject: "owner-subject-id", Actor: "telegram-agent", Tool: "smart_lock.unlock",
+		Arguments: map[string]any{"device_id": "demo-front-door"}, TraceID: "smart-lock-trace-audit",
+	}
+	approval, err := issuer.Issue(t.Context(), binding)
+	if err != nil {
+		t.Fatalf("issue Approval: %v", err)
+	}
+	audit := &capturingAudit{}
+	session := connectGateway(t, gateway.Dependencies{
+		Identity: fixedIdentity{Subject: "owner-subject-id", Actor: "telegram-agent", TurnCapabilities: []gateway.Capability{"smart_lock.write"}},
+		Channel:  "telegram", Policy: smartLockPolicy{}, CoffeeStation: readyCoffeeStation{}, Approvals: consumer,
+		SmartLock: &countingSmartLock{}, Audit: audit,
+	})
+	listed, err := session.ListTools(t.Context(), nil)
+	if err != nil || len(listed.Tools) == 0 {
+		t.Fatalf("discover smart-lock Tool: tools=%d err=%v", len(listed.Tools), err)
+	}
+	call := func() *mcp.CallToolResult {
+		result, callErr := session.CallTool(t.Context(), &mcp.CallToolParams{
+			Name: "smart_lock.unlock", Arguments: map[string]any{"device_id": "demo-front-door", "approval": approval},
+		})
+		if callErr != nil {
+			t.Fatalf("call smart-lock Tool: %v", callErr)
+		}
+		return result
+	}
+	if result := call(); result.IsError {
+		t.Fatalf("first smart-lock call failed: %v", result.GetError())
+	}
+	if result := call(); !result.IsError {
+		t.Fatal("Approval replay succeeded")
+	}
+
+	if len(audit.records) < 3 {
+		t.Fatalf("audit records = %d, want discovery and two executions", len(audit.records))
+	}
+	encoded, _ := json.Marshal(audit.records)
+	if strings.Contains(string(encoded), approval) || strings.Contains(string(encoded), "owner-subject-id") {
+		t.Fatalf("audit leaked sensitive value: %s", encoded)
+	}
+	last := audit.records[len(audit.records)-1]
+	if last.Outcome != "deny" || last.DecisionID != "decision-smart-lock" || last.Tool != "smart_lock.unlock" {
+		t.Fatalf("replay audit = %#v", last)
+	}
+	foundCorrelatedAllow := false
+	for _, record := range audit.records {
+		foundCorrelatedAllow = foundCorrelatedAllow || (record.Outcome == "allow" && record.TraceID == "smart-lock-trace-audit")
+	}
+	if !foundCorrelatedAllow {
+		t.Fatalf("no trace-correlated allow record: %#v", audit.records)
+	}
+}
+
 func approveMeeting(t *testing.T, session *mcp.ClientSession, proposalID meeting.ProposalID, approval string) *mcp.CallToolResult {
 	t.Helper()
 	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
@@ -848,6 +998,64 @@ func (outlookOnlyPolicy) Decide(_ context.Context, input gateway.PolicyInput) (g
 }
 
 func (outlookOnlyPolicy) Health(context.Context) error { return nil }
+
+type smartLockPolicy struct{}
+
+func (smartLockPolicy) Decide(_ context.Context, input gateway.PolicyInput) (gateway.PolicyDecision, error) {
+	context := input.SecurityContext
+	capable := false
+	for _, capability := range context.TurnCapabilities {
+		capable = capable || capability == "smart_lock.write"
+	}
+	var arguments struct {
+		DeviceID gateway.LockDeviceID `json:"device_id"`
+	}
+	encoded, _ := json.Marshal(input.Arguments)
+	_ = json.Unmarshal(encoded, &arguments)
+	allowed := input.Tool == "smart_lock.unlock" && context.Subject == "owner-subject-id" && context.Actor == "telegram-agent" &&
+		context.Channel == "telegram" && capable && (input.Operation == "discover" || arguments.DeviceID == "demo-front-door")
+	return gateway.PolicyDecision{
+		Allow: allowed, DecisionID: "decision-smart-lock", PolicyRevision: "ticket-06", Reason: "owner_exact_smart_lock",
+	}, nil
+}
+
+func (smartLockPolicy) Health(context.Context) error { return nil }
+
+type countingSmartLock struct{ effects int }
+
+func (lock *countingSmartLock) Unlock(_ context.Context, deviceID gateway.LockDeviceID) (gateway.SmartLockState, error) {
+	lock.effects++
+	return gateway.SmartLockState{DeviceID: deviceID, State: "unlocked"}, nil
+}
+
+func (*countingSmartLock) Health(context.Context) error { return nil }
+
+type unreachableSmartLock struct{ t *testing.T }
+
+func (lock unreachableSmartLock) Unlock(context.Context, gateway.LockDeviceID) (gateway.SmartLockState, error) {
+	lock.t.Fatal("denied Tool Call reached the smart-lock adapter")
+	return gateway.SmartLockState{}, nil
+}
+
+func (unreachableSmartLock) Health(context.Context) error { return nil }
+
+type unreachableApprovalConsumer struct{ t *testing.T }
+
+func (authority unreachableApprovalConsumer) ConsumeExact(context.Context, string, approvalauthority.Binding) (approvalauthority.Consumption, error) {
+	authority.t.Fatal("denied Tool Call reached the Approval Authority")
+	return approvalauthority.Consumption{}, nil
+}
+
+func (unreachableApprovalConsumer) Health(context.Context) error { return nil }
+
+type capturingAudit struct {
+	records []gateway.AuditRecord
+}
+
+func (audit *capturingAudit) Record(_ context.Context, record gateway.AuditRecord) error {
+	audit.records = append(audit.records, record)
+	return nil
+}
 
 type demoOutlook struct{}
 

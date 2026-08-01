@@ -59,6 +59,7 @@ func (client *Client) Decide(ctx context.Context, input gateway.PolicyInput) (ga
 		Result     *struct {
 			Allow          bool   `json:"allow"`
 			PolicyRevision string `json:"policy_revision"`
+			Reason         string `json:"reason"`
 		} `json:"result"`
 	}
 	decoder := json.NewDecoder(io.LimitReader(response.Body, maxResponseBytes))
@@ -78,6 +79,7 @@ func (client *Client) Decide(ctx context.Context, input gateway.PolicyInput) (ga
 		Allow:          document.Result.Allow,
 		DecisionID:     document.DecisionID,
 		PolicyRevision: document.Result.PolicyRevision,
+		Reason:         document.Result.Reason,
 	}, nil
 }
 

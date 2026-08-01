@@ -50,6 +50,7 @@ func main() {
 		Availability:      gatewayClient,
 		Meetings:          gatewayClient,
 		Outlook:           gatewayClient,
+		SmartLock:         gatewayClient,
 		AvailabilityLimit: 2,
 		ProposalLimit:     1,
 		RateLimitWindow:   time.Hour,

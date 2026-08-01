@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/nahtao97/agent-tool-guardrails/internal/approvalauthority"
@@ -10,12 +11,20 @@ import (
 )
 
 func main() {
+	ttl := 2 * time.Minute
+	if configured := os.Getenv("APPROVAL_TTL"); configured != "" {
+		parsed, err := time.ParseDuration(configured)
+		if err != nil || parsed <= 0 {
+			log.Fatalf("invalid APPROVAL_TTL %q", configured)
+		}
+		ttl = parsed
+	}
 	handler := approvalauthority.NewHandler(approvalauthority.Config{
 		SigningKey:         []byte(envconfig.Must("APPROVAL_SIGNING_KEY")),
 		IssuerCredential:   envconfig.Must("APPROVAL_ISSUER_CREDENTIAL"),
 		ConsumerCredential: envconfig.Must("APPROVAL_CONSUMER_CREDENTIAL"),
 		OwnerSubject:       envconfig.Must("OWNER_SUBJECT"),
-		TTL:                2 * time.Minute,
+		TTL:                ttl,
 		StateFile:          envconfig.Must("APPROVAL_STATE_FILE"),
 	})
 	server := &http.Server{

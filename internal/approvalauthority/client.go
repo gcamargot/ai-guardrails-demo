@@ -16,6 +16,10 @@ type Client struct {
 	httpClient *http.Client
 }
 
+type Consumption struct {
+	TraceID string
+}
+
 func NewClient(baseURL, credential string, httpClient *http.Client) *Client {
 	return &Client{baseURL: strings.TrimRight(baseURL, "/"), credential: credential, httpClient: httpClient}
 }
@@ -41,15 +45,24 @@ func (client *Client) Issue(ctx context.Context, binding Binding) (string, error
 }
 
 func (client *Client) Consume(ctx context.Context, approval string, binding Binding) error {
+	_, err := client.ConsumeExact(ctx, approval, binding)
+	return err
+}
+
+func (client *Client) ConsumeExact(ctx context.Context, approval string, binding Binding) (Consumption, error) {
 	response, err := client.post(ctx, "/approvals/consume", map[string]any{"approval": approval, "binding": binding})
 	if err != nil {
-		return err
+		return Consumption{}, err
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("Approval denied with HTTP %d", response.StatusCode)
+		return Consumption{}, fmt.Errorf("Approval denied with HTTP %d", response.StatusCode)
 	}
-	return nil
+	traceID := response.Header.Get("X-Approval-Trace-ID")
+	if traceID == "" {
+		return Consumption{}, errors.New("Approval Authority returned no trace correlation")
+	}
+	return Consumption{TraceID: traceID}, nil
 }
 
 func (client *Client) Health(ctx context.Context) error {

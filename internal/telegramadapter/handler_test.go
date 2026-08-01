@@ -163,6 +163,46 @@ func TestOwnerExplicitlyReadsMinimizedOutlookMessageAsUntrustedContent(t *testin
 	}
 }
 
+func TestOwnerReviewsAndExplicitlyApprovesExactSmartLockOperation(t *testing.T) {
+	lock := &capturingSmartLockGateway{}
+	handler := telegramadapter.NewHandler(telegramadapter.Config{
+		WebhookSecret: "verified-webhook-secret",
+		VerifiedUsers: map[telegramadapter.TelegramUserID]telegramadapter.Subject{
+			9001: "owner-subject-id", 4242: "external-alice-subject-id",
+		},
+		OwnerSubject: "owner-subject-id",
+		SmartLock:    lock,
+	})
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+
+	review := postTelegramResponse(t, server.URL, `{"message":{"from":{"id":9001},"text":"/review-unlock demo-front-door"}}`)
+	defer review.Body.Close()
+	if review.StatusCode != http.StatusOK {
+		t.Fatalf("review unlock status = %d, want %d", review.StatusCode, http.StatusOK)
+	}
+	var operation telegramadapter.SmartLockOperation
+	if err := json.NewDecoder(review.Body).Decode(&operation); err != nil || operation.Tool != "smart_lock.unlock" ||
+		operation.Arguments.DeviceID != "demo-front-door" || operation.Approval != "exact-lock-approval" || operation.TraceID == "" {
+		t.Fatalf("exact smart-lock operation = %#v err=%v", operation, err)
+	}
+	if lock.effects != 0 {
+		t.Fatalf("review produced %d Effects", lock.effects)
+	}
+
+	approved := postTelegramResponse(t, server.URL, `{"message":{"from":{"id":9001},"text":"/unlock demo-front-door exact-lock-approval"}}`)
+	defer approved.Body.Close()
+	if approved.StatusCode != http.StatusOK {
+		t.Fatalf("unlock status = %d, want %d", approved.StatusCode, http.StatusOK)
+	}
+	if lock.effects != 1 || lock.identity.Actor != "telegram-agent" || lock.identity.Channel != "telegram" {
+		t.Fatalf("smart-lock Effects=%d identity=%#v", lock.effects, lock.identity)
+	}
+	if status := postTelegram(t, server.URL, `{"message":{"from":{"id":4242},"text":"/review-unlock demo-front-door"}}`); status != http.StatusForbidden {
+		t.Fatalf("External Subject review status = %d, want %d", status, http.StatusForbidden)
+	}
+}
+
 func TestOutlookSearchRequiresAnExplicitOwnerCommand(t *testing.T) {
 	t.Parallel()
 
@@ -311,6 +351,24 @@ type capturingOutlookGateway struct {
 	messageID telegramadapter.OutlookMessageID
 	query     telegramadapter.OutlookSearchQuery
 	searches  int
+}
+
+type capturingSmartLockGateway struct {
+	identity telegramadapter.TrustedTelegramIdentity
+	effects  int
+}
+
+func (gateway *capturingSmartLockGateway) ReviewUnlock(_ context.Context, identity telegramadapter.TrustedTelegramIdentity, deviceID telegramadapter.SmartLockDeviceID) (telegramadapter.SmartLockOperation, error) {
+	gateway.identity = identity
+	return telegramadapter.SmartLockOperation{
+		Tool: "smart_lock.unlock", Arguments: telegramadapter.SmartLockArguments{DeviceID: deviceID}, TraceID: "smart-lock-trace-1", Approval: "exact-lock-approval",
+	}, nil
+}
+
+func (gateway *capturingSmartLockGateway) Unlock(_ context.Context, identity telegramadapter.TrustedTelegramIdentity, _ telegramadapter.SmartLockDeviceID, _ meeting.ApprovalToken) (telegramadapter.SmartLockState, error) {
+	gateway.identity = identity
+	gateway.effects++
+	return telegramadapter.SmartLockState{DeviceID: "demo-front-door", State: "unlocked"}, nil
 }
 
 func (gateway *capturingOutlookGateway) SearchMessages(_ context.Context, identity telegramadapter.TrustedTelegramIdentity, query telegramadapter.OutlookSearchQuery) ([]telegramadapter.OutlookSearchResult, error) {
