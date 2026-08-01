@@ -59,11 +59,10 @@ services:
     command:
       - -ec
       - |
-        vault policy write gateway-calendar-reader /config/gateway-calendar-reader.hcl >/dev/null
-        vault policy write calendar-resource-reader /config/calendar-resource-reader.hcl >/dev/null
+        vault policy write calendar-reader /config/calendar-reader.hcl >/dev/null
         vault kv put secret/calendar credential=demo-calendar-credential >/dev/null
-        vault token create -field=token -policy=gateway-calendar-reader -no-default-policy > /tokens/gateway
-        vault token create -field=token -policy=calendar-resource-reader -no-default-policy > /tokens/calendar
+        vault token create -field=token -policy=calendar-reader -no-default-policy > /tokens/gateway
+        vault token create -field=token -policy=calendar-reader -no-default-policy > /tokens/calendar
     depends_on:
       vault:
         condition: service_healthy
