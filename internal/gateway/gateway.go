@@ -9,21 +9,38 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const coffeeStationStatusTool = "coffee_station.get_status"
+type Subject string
+type Actor string
+type Channel string
+type Capability string
+type ToolName string
+type PolicyOperation string
+type StationID string
+
+const (
+	coffeeStationStatusTool ToolName        = "coffee_station.get_status"
+	discoverOperation       PolicyOperation = "discover"
+	executeOperation        PolicyOperation = "execute"
+)
 
 type SecurityContext struct {
-	Subject string `json:"subject"`
+	Subject          Subject      `json:"subject"`
+	Actor            Actor        `json:"actor"`
+	Channel          Channel      `json:"channel"`
+	TurnCapabilities []Capability `json:"turn_capabilities"`
 }
 
 type PolicyInput struct {
 	SecurityContext SecurityContext `json:"security_context"`
-	Tool            string          `json:"tool"`
+	Operation       PolicyOperation `json:"operation"`
+	Tool            ToolName        `json:"tool"`
 	Arguments       any             `json:"arguments"`
 }
 
 type PolicyDecision struct {
-	Allow      bool   `json:"allow"`
-	DecisionID string `json:"decision_id"`
+	Allow          bool   `json:"allow"`
+	DecisionID     string `json:"decision_id"`
+	PolicyRevision string `json:"policy_revision"`
 }
 
 type PolicyClient interface {
@@ -32,12 +49,13 @@ type PolicyClient interface {
 }
 
 type CoffeeStation interface {
-	Status(context.Context, string) (CoffeeStationStatus, error)
+	Status(context.Context, StationID) (CoffeeStationStatus, error)
+	Health(context.Context) error
 }
 
 type CoffeeStationStatus struct {
-	StationID string `json:"station_id"`
-	State     string `json:"state"`
+	StationID StationID `json:"station_id"`
+	State     string    `json:"state"`
 }
 
 type Dependencies struct {
@@ -47,7 +65,7 @@ type Dependencies struct {
 }
 
 type coffeeStationStatusInput struct {
-	StationID string `json:"station_id" jsonschema:"the fixed identifier of the coffee station"`
+	StationID StationID `json:"station_id" jsonschema:"the fixed identifier of the coffee station"`
 }
 
 func NewHandler(deps Dependencies) http.Handler {
@@ -55,20 +73,40 @@ func NewHandler(deps Dependencies) http.Handler {
 		Name:    "agent-tool-guardrails",
 		Version: "v0.1.0",
 	}, nil)
+	server.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
+		return func(ctx context.Context, method string, request mcp.Request) (mcp.Result, error) {
+			if method != "tools/list" {
+				return next(ctx, method, request)
+			}
+			decision, err := deps.Policy.Decide(ctx, PolicyInput{
+				SecurityContext: deps.SecurityContext,
+				Operation:       discoverOperation,
+				Tool:            coffeeStationStatusTool,
+			})
+			if err != nil || !decision.Allow {
+				return &mcp.ListToolsResult{}, nil
+			}
+			return next(ctx, method, request)
+		}
+	})
 
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        coffeeStationStatusTool,
+		Name:        string(coffeeStationStatusTool),
 		Description: "Read the status of the demo coffee station.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input coffeeStationStatusInput) (*mcp.CallToolResult, CoffeeStationStatus, error) {
 		decision, err := deps.Policy.Decide(ctx, PolicyInput{
 			SecurityContext: deps.SecurityContext,
+			Operation:       executeOperation,
 			Tool:            coffeeStationStatusTool,
 			Arguments:       input,
 		})
 		if err != nil {
 			return nil, CoffeeStationStatus{}, err
 		}
-		result := &mcp.CallToolResult{Meta: mcp.Meta{"decision_id": decision.DecisionID}}
+		result := &mcp.CallToolResult{Meta: mcp.Meta{
+			"decision_id":     decision.DecisionID,
+			"policy_revision": decision.PolicyRevision,
+		}}
 		if !decision.Allow {
 			result.SetError(errors.New("tool call denied by policy"))
 			return result, CoffeeStationStatus{}, nil
@@ -100,9 +138,19 @@ func NewHandler(deps Dependencies) http.Handler {
 			})
 			return
 		}
+		if err := deps.CoffeeStation.Health(request.Context()); err != nil {
+			response.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(response).Encode(map[string]string{
+				"status":   "unavailable",
+				"policy":   "ready",
+				"resource": "unavailable",
+			})
+			return
+		}
 		_ = json.NewEncoder(response).Encode(map[string]string{
-			"status": "ready",
-			"policy": "ready",
+			"status":   "ready",
+			"policy":   "ready",
+			"resource": "ready",
 		})
 	})
 	return mux

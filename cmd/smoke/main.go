@@ -42,6 +42,9 @@ func main() {
 	if !ok || output["state"] != "ready" {
 		log.Fatalf("unexpected allowed result: %#v", allowed.StructuredContent)
 	}
+	if allowed.Meta["policy_revision"] != "ticket-01" {
+		log.Fatalf("unexpected policy revision: %v", allowed.Meta["policy_revision"])
+	}
 
 	denied, err := session.CallTool(ctx, &mcp.CallToolParams{
 		Name:      "coffee_station.get_status",
@@ -57,5 +60,10 @@ func main() {
 		log.Fatal("denied Tool Call has no decision_id")
 	}
 
-	fmt.Printf("PASS allow_decision=%v deny_decision=%v\n", allowed.Meta["decision_id"], denied.Meta["decision_id"])
+	fmt.Printf(
+		"PASS policy_revision=%v allow_decision=%v deny_decision=%v\n",
+		allowed.Meta["policy_revision"],
+		allowed.Meta["decision_id"],
+		denied.Meta["decision_id"],
+	)
 }

@@ -14,8 +14,13 @@ import (
 func main() {
 	httpClient := &http.Client{Timeout: 3 * time.Second}
 	handler := gateway.NewHandler(gateway.Dependencies{
-		SecurityContext: gateway.SecurityContext{Subject: environment("DEMO_SUBJECT", "unknown")},
-		Policy:          opaclient.New(environment("OPA_URL", "http://127.0.0.1:8181"), httpClient),
+		SecurityContext: gateway.SecurityContext{
+			Subject:          gateway.Subject(environment("DEMO_SUBJECT", "unknown")),
+			Actor:            gateway.Actor(environment("DEMO_ACTOR", "unknown")),
+			Channel:          gateway.Channel(environment("DEMO_CHANNEL", "unknown")),
+			TurnCapabilities: []gateway.Capability{"coffee_station.read"},
+		},
+		Policy: opaclient.New(environment("OPA_URL", "http://127.0.0.1:8181"), httpClient),
 		CoffeeStation: coffeestationclient.New(
 			environment("COFFEE_STATION_URL", "http://127.0.0.1:8081"),
 			httpClient,

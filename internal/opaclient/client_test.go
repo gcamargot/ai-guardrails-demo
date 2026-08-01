@@ -32,7 +32,7 @@ func TestGatewayUsesOPADecisionToAllowToolCall(t *testing.T) {
 			t.Errorf("OPA tool = %q, want coffee_station.get_status", document.Input.Tool)
 		}
 		response.Header().Set("Content-Type", "application/json")
-		_, _ = response.Write([]byte(`{"decision_id":"opa-allow","result":{"allow":true}}`))
+		_, _ = response.Write([]byte(`{"decision_id":"opa-allow","result":{"allow":true,"policy_revision":"ticket-01"}}`))
 	}))
 	t.Cleanup(policyServer.Close)
 
@@ -66,10 +66,15 @@ func TestGatewayUsesOPADecisionToAllowToolCall(t *testing.T) {
 	if got := result.Meta["decision_id"]; got != "opa-allow" {
 		t.Errorf("decision_id = %v, want opa-allow", got)
 	}
+	if got := result.Meta["policy_revision"]; got != "ticket-01" {
+		t.Errorf("policy_revision = %v, want ticket-01", got)
+	}
 }
 
 type readyCoffeeStation struct{}
 
-func (readyCoffeeStation) Status(context.Context, string) (gateway.CoffeeStationStatus, error) {
+func (readyCoffeeStation) Status(context.Context, gateway.StationID) (gateway.CoffeeStationStatus, error) {
 	return gateway.CoffeeStationStatus{StationID: "demo-station", State: "ready"}, nil
 }
+
+func (readyCoffeeStation) Health(context.Context) error { return nil }

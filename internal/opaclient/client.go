@@ -57,7 +57,8 @@ func (client *Client) Decide(ctx context.Context, input gateway.PolicyInput) (ga
 	var document struct {
 		DecisionID string `json:"decision_id"`
 		Result     *struct {
-			Allow bool `json:"allow"`
+			Allow          bool   `json:"allow"`
+			PolicyRevision string `json:"policy_revision"`
 		} `json:"result"`
 	}
 	decoder := json.NewDecoder(io.LimitReader(response.Body, maxResponseBytes))
@@ -70,9 +71,13 @@ func (client *Client) Decide(ctx context.Context, input gateway.PolicyInput) (ga
 	if document.DecisionID == "" {
 		return gateway.PolicyDecision{}, errors.New("OPA decision_id is missing")
 	}
+	if document.Result.PolicyRevision == "" {
+		return gateway.PolicyDecision{}, errors.New("OPA policy_revision is missing")
+	}
 	return gateway.PolicyDecision{
-		Allow:      document.Result.Allow,
-		DecisionID: document.DecisionID,
+		Allow:          document.Result.Allow,
+		DecisionID:     document.DecisionID,
+		PolicyRevision: document.Result.PolicyRevision,
 	}, nil
 }
 

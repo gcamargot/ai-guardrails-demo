@@ -29,6 +29,8 @@ services:
     command: /app/gateway
     environment:
       COFFEE_STATION_URL: http://coffee-station:8081
+      DEMO_ACTOR: demo-mcp-client
+      DEMO_CHANNEL: streamable-http
       DEMO_SUBJECT: owner
       OPA_URL: http://opa:8181
     depends_on:
@@ -37,7 +39,7 @@ services:
       opa:
         condition: service_started
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     networks:
       - public
       - control
