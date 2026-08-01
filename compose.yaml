@@ -100,10 +100,28 @@ services:
       timeout: 1s
       retries: 15
 
+  approval-authority:
+    build: .
+    command: /app/approval-authority
+    environment:
+      APPROVAL_ISSUER_CREDENTIAL: demo-approval-service-credential
+      APPROVAL_CONSUMER_CREDENTIAL: demo-approval-consumer-credential
+      APPROVAL_SIGNING_KEY: demo-approval-signing-key-32-bytes-minimum
+      OWNER_SUBJECT: owner-subject-id
+    networks:
+      - approval
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8086/healthz"]
+      interval: 2s
+      timeout: 1s
+      retries: 15
+
   gateway:
     build: .
     command: /app/gateway
     environment:
+      APPROVAL_AUTHORITY_URL: http://approval-authority:8086
+      APPROVAL_CONSUMER_CREDENTIAL: demo-approval-consumer-credential
       AUTH_CHANNEL: streamable-http
       CALENDAR_URL: http://calendar:8083
       COFFEE_STATION_URL: http://coffee-station:8081
@@ -114,6 +132,8 @@ services:
       VAULT_TOKEN_FILE: /run/vault-token/gateway
       VAULT_URL: http://vault:8200
     depends_on:
+      approval-authority:
+        condition: service_healthy
       calendar:
         condition: service_healthy
       coffee-station:
@@ -132,6 +152,7 @@ services:
       - identity
       - protected
       - secrets
+      - approval
     volumes:
       - vault-tokens:/run/vault-token:ro
     healthcheck:
@@ -144,16 +165,20 @@ services:
     build: .
     command: /app/gateway
     environment:
+      APPROVAL_AUTHORITY_URL: http://approval-authority:8086
+      APPROVAL_CONSUMER_CREDENTIAL: demo-approval-consumer-credential
       AUTH_CHANNEL: telegram
       CALENDAR_URL: http://calendar:8083
       COFFEE_STATION_URL: http://coffee-station:8081
       OPA_URL: http://opa:8181
       OIDC_AUDIENCE: agent-tools-gateway
       OIDC_ISSUER: http://keycloak:8080/realms/agent-tools
-      OIDC_REQUIRED_SCOPES: calendar.free_busy.read
+      OIDC_REQUIRED_SCOPES: calendar.free_busy.read,calendar.meeting.propose,calendar.meeting.approve
       VAULT_TOKEN_FILE: /run/vault-token/gateway
       VAULT_URL: http://vault:8200
     depends_on:
+      approval-authority:
+        condition: service_healthy
       calendar:
         condition: service_healthy
       coffee-station:
@@ -170,6 +195,7 @@ services:
       - identity
       - protected
       - secrets
+      - approval
     volumes:
       - vault-tokens:/run/vault-token:ro
     healthcheck:
@@ -193,16 +219,24 @@ services:
     build: .
     command: /app/telegram-adapter
     environment:
+      APPROVAL_AUTHORITY_URL: http://approval-authority:8086
+      APPROVAL_ISSUER_CREDENTIAL: demo-approval-service-credential
       EXTERNAL_PASSWORD: external-demo-password
       EXTERNAL_SUBJECT: external-alice-subject-id
       EXTERNAL_USERNAME: external-alice
       GATEWAY_MCP_URL: http://telegram-gateway:8080/mcp
       KEYCLOAK_TOKEN_URL: http://keycloak:8080/realms/agent-tools/protocol/openid-connect/token
+      OWNER_PASSWORD: owner-demo-password
+      OWNER_SUBJECT: owner-subject-id
+      OWNER_TELEGRAM_USER_ID: "9001"
+      OWNER_USERNAME: owner
       QWEN_URL: http://qwen:8085
       TELEGRAM_OIDC_CLIENT_SECRET: telegram-demo-secret
       TELEGRAM_USER_ID: "4242"
       TELEGRAM_WEBHOOK_SECRET: demo-telegram-webhook-secret
     depends_on:
+      approval-authority:
+        condition: service_healthy
       qwen:
         condition: service_healthy
       telegram-gateway:
@@ -213,6 +247,7 @@ services:
       - public
       - identity
       - model
+      - approval
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8084/healthz"]
       interval: 2s
@@ -223,6 +258,7 @@ services:
     build: .
     command: /app/smoke
     environment:
+      CALENDAR_DEMO_URL: http://calendar:8083
       GATEWAY_MCP_URL: http://gateway:8080/mcp
       KEYCLOAK_TOKEN_URL: http://keycloak:8080/realms/agent-tools/protocol/openid-connect/token
       TELEGRAM_GATEWAY_MCP_URL: http://telegram-gateway:8080/mcp
@@ -235,6 +271,7 @@ services:
     networks:
       - public
       - identity
+      - protected
     profiles:
       - test
 
@@ -249,6 +286,8 @@ networks:
   secrets:
     internal: true
   model:
+    internal: true
+  approval:
     internal: true
 
 volumes:

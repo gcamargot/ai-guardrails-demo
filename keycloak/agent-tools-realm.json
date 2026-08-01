@@ -42,6 +42,50 @@
       ]
     },
     {
+      "name": "calendar.meeting.propose",
+      "description": "Turn Capability for an External Subject to submit a Meeting Proposal",
+      "protocol": "openid-connect",
+      "attributes": {"include.in.token.scope": "true", "display.on.consent.screen": "false"},
+      "protocolMappers": [
+        {
+          "name": "authenticated-subject",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-sub-mapper",
+          "consentRequired": false,
+          "config": {"access.token.claim": "true", "lightweight.claim": "true", "introspection.token.claim": "true"}
+        },
+        {
+          "name": "agent-tools-gateway-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {"included.client.audience": "agent-tools-gateway", "id.token.claim": "false", "access.token.claim": "true", "lightweight.claim": "true", "introspection.token.claim": "true"}
+        }
+      ]
+    },
+    {
+      "name": "calendar.meeting.approve",
+      "description": "Turn Capability for the Owner's explicit exact Approval",
+      "protocol": "openid-connect",
+      "attributes": {"include.in.token.scope": "true", "display.on.consent.screen": "false"},
+      "protocolMappers": [
+        {
+          "name": "authenticated-subject",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-sub-mapper",
+          "consentRequired": false,
+          "config": {"access.token.claim": "true", "lightweight.claim": "true", "introspection.token.claim": "true"}
+        },
+        {
+          "name": "agent-tools-gateway-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {"included.client.audience": "agent-tools-gateway", "id.token.claim": "false", "access.token.claim": "true", "lightweight.claim": "true", "introspection.token.claim": "true"}
+        }
+      ]
+    },
+    {
       "name": "calendar.free_busy.read",
       "description": "Turn Capability for the minimized availability Tool",
       "protocol": "openid-connect",
@@ -96,7 +140,7 @@
       "serviceAccountsEnabled": false,
       "publicClient": false,
       "protocol": "openid-connect",
-      "defaultClientScopes": ["coffee_station.read", "calendar.free_busy.read"]
+      "defaultClientScopes": ["coffee_station.read", "calendar.free_busy.read", "calendar.meeting.propose", "calendar.meeting.approve"]
     },
     {
       "clientId": "coding-agent",

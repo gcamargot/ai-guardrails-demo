@@ -8,10 +8,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nahtao97/agent-tool-guardrails/internal/approvalauthority"
 	"github.com/nahtao97/agent-tool-guardrails/internal/calendarclient"
 	"github.com/nahtao97/agent-tool-guardrails/internal/coffeestationclient"
 	"github.com/nahtao97/agent-tool-guardrails/internal/envconfig"
 	"github.com/nahtao97/agent-tool-guardrails/internal/gateway"
+	"github.com/nahtao97/agent-tool-guardrails/internal/meeting"
 	"github.com/nahtao97/agent-tool-guardrails/internal/oidcauth"
 	"github.com/nahtao97/agent-tool-guardrails/internal/opaclient"
 	"github.com/nahtao97/agent-tool-guardrails/internal/vaultclient"
@@ -37,6 +39,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("initialize OIDC authentication: %v", err)
 	}
+	calendar := calendarclient.New(envconfig.Must("CALENDAR_URL"), calendarCredential, httpClient)
 	handler := gateway.NewHandler(gateway.Dependencies{
 		Identity: authenticator,
 		Channel:  gateway.Channel(envconfig.Must("AUTH_CHANNEL")),
@@ -45,11 +48,10 @@ func main() {
 			environment("COFFEE_STATION_URL", "http://127.0.0.1:8081"),
 			httpClient,
 		),
-		Calendar: calendarclient.New(
-			envconfig.Must("CALENDAR_URL"),
-			calendarCredential,
-			httpClient,
-		),
+		Calendar:       calendar,
+		Proposals:      meeting.NewStore(),
+		Approvals:      approvalauthority.NewClient(envconfig.Must("APPROVAL_AUTHORITY_URL"), envconfig.Must("APPROVAL_CONSUMER_CREDENTIAL"), httpClient),
+		CalendarEvents: calendar,
 	})
 
 	server := &http.Server{

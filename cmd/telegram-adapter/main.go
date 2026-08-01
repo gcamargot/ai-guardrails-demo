@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/nahtao97/agent-tool-guardrails/internal/approvalauthority"
 	"github.com/nahtao97/agent-tool-guardrails/internal/envconfig"
 	"github.com/nahtao97/agent-tool-guardrails/internal/telegramadapter"
 )
@@ -13,11 +14,17 @@ import (
 func main() {
 	httpClient := &http.Client{Timeout: 5 * time.Second}
 	subject := telegramadapter.Subject(envconfig.Must("EXTERNAL_SUBJECT"))
+	ownerSubject := telegramadapter.Subject(envconfig.Must("OWNER_SUBJECT"))
 	userID, err := strconv.ParseInt(envconfig.Must("TELEGRAM_USER_ID"), 10, 64)
 	if err != nil {
 		log.Fatalf("parse verified Telegram user ID: %v", err)
 	}
-	availability := telegramadapter.NewGatewayClient(telegramadapter.GatewayClientConfig{
+	ownerUserID, err := strconv.ParseInt(envconfig.Must("OWNER_TELEGRAM_USER_ID"), 10, 64)
+	if err != nil {
+		log.Fatalf("parse Owner Telegram user ID: %v", err)
+	}
+	authority := approvalauthority.NewClient(envconfig.Must("APPROVAL_AUTHORITY_URL"), envconfig.Must("APPROVAL_ISSUER_CREDENTIAL"), httpClient)
+	gatewayClient := telegramadapter.NewGatewayClient(telegramadapter.GatewayClientConfig{
 		Endpoint:      envconfig.Must("GATEWAY_MCP_URL"),
 		TokenEndpoint: envconfig.Must("KEYCLOAK_TOKEN_URL"),
 		ClientID:      "telegram-agent",
@@ -25,16 +32,26 @@ func main() {
 		Subject:       subject,
 		Username:      envconfig.Must("EXTERNAL_USERNAME"),
 		Password:      envconfig.Must("EXTERNAL_PASSWORD"),
+		OwnerSubject:  ownerSubject,
+		OwnerUsername: envconfig.Must("OWNER_USERNAME"),
+		OwnerPassword: envconfig.Must("OWNER_PASSWORD"),
+		Approvals:     authority,
 		HTTPClient:    httpClient,
 	})
 	handler := telegramadapter.NewHandler(telegramadapter.Config{
 		WebhookSecret: envconfig.Must("TELEGRAM_WEBHOOK_SECRET"),
 		VerifiedUsers: map[telegramadapter.TelegramUserID]telegramadapter.Subject{
-			telegramadapter.TelegramUserID(userID): subject,
+			telegramadapter.TelegramUserID(userID):      subject,
+			telegramadapter.TelegramUserID(ownerUserID): ownerSubject,
 		},
-		ClassifierURL: envconfig.Must("QWEN_URL") + "/classify",
-		HTTPClient:    httpClient,
-		Availability:  availability,
+		OwnerSubject:      ownerSubject,
+		ClassifierURL:     envconfig.Must("QWEN_URL") + "/classify",
+		HTTPClient:        httpClient,
+		Availability:      gatewayClient,
+		Meetings:          gatewayClient,
+		AvailabilityLimit: 2,
+		ProposalLimit:     1,
+		RateLimitWindow:   time.Hour,
 	})
 	server := &http.Server{
 		Addr:              ":8084",

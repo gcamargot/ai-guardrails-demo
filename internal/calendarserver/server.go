@@ -2,13 +2,26 @@ package calendarserver
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/nahtao97/agent-tool-guardrails/internal/freebusy"
+	"github.com/nahtao97/agent-tool-guardrails/internal/meeting"
 )
 
 func NewHandler(expectedCredential string) http.Handler {
+	type storedEvent struct {
+		arguments meeting.EventArguments
+		eventID   string
+	}
+	var state struct {
+		sync.Mutex
+		events map[string]storedEvent
+	}
+	state.events = make(map[string]storedEvent)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(response http.ResponseWriter, _ *http.Request) {
 		response.Header().Set("Content-Type", "application/json")
@@ -47,7 +60,50 @@ func NewHandler(expectedCredential string) http.Handler {
 		response.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(response).Encode(freebusy.View{AvailableIntervals: intervals})
 	})
+	mux.HandleFunc("POST /events", func(response http.ResponseWriter, request *http.Request) {
+		if expectedCredential == "" || request.Header.Get("Authorization") != "Bearer "+expectedCredential {
+			http.Error(response, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		var arguments meeting.EventArguments
+		decoder := json.NewDecoder(io.LimitReader(request.Body, 1<<20))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&arguments) != nil || !validEventArguments(arguments) {
+			http.Error(response, "invalid event", http.StatusBadRequest)
+			return
+		}
+		state.Lock()
+		defer state.Unlock()
+		if existing, ok := state.events[arguments.IdempotencyKey]; ok {
+			if existing.arguments != arguments {
+				http.Error(response, "idempotency conflict", http.StatusConflict)
+				return
+			}
+			response.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(response).Encode(meeting.Event{EventID: existing.eventID, Created: false})
+			return
+		}
+		eventID := "demo-event-" + strings.TrimPrefix(arguments.ProposalID.String(), "proposal-")
+		state.events[arguments.IdempotencyKey] = storedEvent{arguments: arguments, eventID: eventID}
+		response.Header().Set("Content-Type", "application/json")
+		response.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(response).Encode(meeting.Event{EventID: eventID, Created: true})
+	})
+	mux.HandleFunc("GET /demo/event-count", func(response http.ResponseWriter, _ *http.Request) {
+		state.Lock()
+		defer state.Unlock()
+		response.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(response).Encode(map[string]int{"event_count": len(state.events)})
+	})
 	return mux
+}
+
+func validEventArguments(arguments meeting.EventArguments) bool {
+	start, startErr := time.Parse(time.RFC3339, arguments.Start)
+	end, endErr := time.Parse(time.RFC3339, arguments.End)
+	return startErr == nil && endErr == nil && end.After(start) && end.Sub(start) <= 2*time.Hour &&
+		arguments.ProposalID != "" && arguments.RequesterSubject != "" && strings.TrimSpace(arguments.Reason) != "" &&
+		strings.TrimSpace(arguments.Contact) != "" && arguments.IdempotencyKey == "meeting-proposal:"+arguments.ProposalID.String()
 }
 
 func interval(start, end time.Time) freebusy.AvailableInterval {

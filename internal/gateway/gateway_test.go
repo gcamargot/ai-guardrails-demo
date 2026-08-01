@@ -8,11 +8,14 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/nahtao97/agent-tool-guardrails/internal/approvalauthority"
 	"github.com/nahtao97/agent-tool-guardrails/internal/calendarclient"
 	"github.com/nahtao97/agent-tool-guardrails/internal/freebusy"
 	"github.com/nahtao97/agent-tool-guardrails/internal/gateway"
+	"github.com/nahtao97/agent-tool-guardrails/internal/meeting"
 	"golang.org/x/oauth2"
 )
 
@@ -280,6 +283,137 @@ func TestExternalSubjectReceivesOnlyAvailableIntervals(t *testing.T) {
 	if !ok || len(interval) != 2 || interval["start"] != "2026-08-03T10:00:00Z" || interval["end"] != "2026-08-03T10:30:00Z" {
 		t.Fatalf("available interval = %#v, want only start and end", intervals[0])
 	}
+}
+
+func TestExternalProposalHasNoEffectAndOwnerReviewsExactNormalizedOperation(t *testing.T) {
+	t.Parallel()
+
+	proposals := meeting.NewStore()
+	external := connectGateway(t, gateway.Dependencies{
+		Identity: fixedIdentity{
+			Subject:          "external-alice-subject-id",
+			Actor:            "telegram-agent",
+			TurnCapabilities: []gateway.Capability{"calendar.meeting.propose"},
+		},
+		Channel:        "telegram",
+		Policy:         meetingPolicy{},
+		CoffeeStation:  readyCoffeeStation{},
+		Proposals:      proposals,
+		CalendarEvents: unreachableCalendarEvents{t: t},
+	})
+	created, err := external.CallTool(t.Context(), &mcp.CallToolParams{
+		Name: "calendar.submit_meeting_proposal",
+		Arguments: map[string]any{
+			"start":   "2026-08-03T13:00:00+00:00",
+			"end":     "2026-08-03T13:30:00+00:00",
+			"reason":  "  Platform sync  ",
+			"contact": "alice@example.invalid",
+		},
+	})
+	if err != nil || created.IsError {
+		t.Fatalf("submit Meeting Proposal: result=%#v err=%v", created, err)
+	}
+
+	owner := connectGateway(t, gateway.Dependencies{
+		Identity: fixedIdentity{
+			Subject:          "owner-subject-id",
+			Actor:            "telegram-agent",
+			TurnCapabilities: []gateway.Capability{"calendar.meeting.approve"},
+		},
+		Channel:        "telegram",
+		Policy:         meetingPolicy{},
+		CoffeeStation:  readyCoffeeStation{},
+		Proposals:      proposals,
+		CalendarEvents: unreachableCalendarEvents{t: t},
+	})
+	reviewed, err := owner.CallTool(t.Context(), &mcp.CallToolParams{
+		Name:      "calendar.review_meeting_proposal",
+		Arguments: map[string]any{"proposal_id": "proposal-1"},
+	})
+	if err != nil || reviewed.IsError {
+		t.Fatalf("review Meeting Proposal: result=%#v err=%v", reviewed, err)
+	}
+	encoded, _ := json.Marshal(reviewed.StructuredContent)
+	want := `{"arguments":{"contact":"alice@example.invalid","end":"2026-08-03T13:30:00Z","idempotency_key":"meeting-proposal:proposal-1","proposal_id":"proposal-1","reason":"Platform sync","requester_subject":"external-alice-subject-id","start":"2026-08-03T13:00:00Z"},"tool":"calendar.create_event","trace_id":"meeting-trace-1"}`
+	if string(encoded) != want {
+		t.Fatalf("exact normalized operation = %s, want %s", encoded, want)
+	}
+}
+
+func TestApprovalMustBeExactActiveAndSingleUseBeforeCalendarEffect(t *testing.T) {
+	now := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+	authorityServer := httptest.NewServer(approvalauthority.NewHandler(approvalauthority.Config{
+		SigningKey:         []byte("test-signing-key-with-at-least-32-bytes"),
+		IssuerCredential:   "trusted-issuer-credential",
+		ConsumerCredential: "trusted-consumer-credential",
+		OwnerSubject:       "owner-subject-id",
+		TTL:                time.Minute,
+		Now:                func() time.Time { return now },
+	}))
+	t.Cleanup(authorityServer.Close)
+	issuer := approvalauthority.NewClient(authorityServer.URL, "trusted-issuer-credential", authorityServer.Client())
+	consumer := approvalauthority.NewClient(authorityServer.URL, "trusted-consumer-credential", authorityServer.Client())
+	proposals := meeting.NewStore()
+	proposal := proposals.Submit("external-alice-subject-id", meeting.ProposalInput{
+		Start: time.Date(2026, 8, 3, 13, 0, 0, 0, time.UTC), End: time.Date(2026, 8, 3, 13, 30, 0, 0, time.UTC),
+		Reason: "Platform sync", Contact: "alice@example.invalid",
+	})
+	operation, _ := proposals.Review(proposal.ProposalID)
+	binding := approvalauthority.Binding{
+		Subject: "owner-subject-id", Actor: "telegram-agent", Tool: operation.Tool,
+		Arguments: operation.Arguments, TraceID: string(operation.TraceID),
+	}
+	events := &countingCalendarEvents{}
+	owner := connectGateway(t, gateway.Dependencies{
+		Identity: fixedIdentity{Subject: "owner-subject-id", Actor: "telegram-agent", TurnCapabilities: []gateway.Capability{"calendar.meeting.approve"}},
+		Channel:  "telegram", Policy: meetingPolicy{}, CoffeeStation: readyCoffeeStation{},
+		Proposals: proposals, Approvals: consumer, CalendarEvents: events,
+	})
+
+	mismatch := binding
+	changed := operation.Arguments
+	changed.Start = "2026-08-03T14:00:00Z"
+	mismatch.Arguments = changed
+	mismatchToken, err := issuer.Issue(t.Context(), mismatch)
+	if err != nil {
+		t.Fatalf("issue mismatched Approval: %v", err)
+	}
+	if result := approveMeeting(t, owner, proposal.ProposalID, mismatchToken); !result.IsError || events.count != 0 {
+		t.Fatalf("mismatched Approval result=%#v calendar effects=%d", result, events.count)
+	}
+
+	expiredToken, err := issuer.Issue(t.Context(), binding)
+	if err != nil {
+		t.Fatalf("issue expiring Approval: %v", err)
+	}
+	now = now.Add(2 * time.Minute)
+	if result := approveMeeting(t, owner, proposal.ProposalID, expiredToken); !result.IsError || events.count != 0 {
+		t.Fatalf("expired Approval result=%#v calendar effects=%d", result, events.count)
+	}
+
+	now = now.Add(-2 * time.Minute)
+	validToken, err := issuer.Issue(t.Context(), binding)
+	if err != nil {
+		t.Fatalf("issue valid Approval: %v", err)
+	}
+	if result := approveMeeting(t, owner, proposal.ProposalID, validToken); result.IsError || events.count != 1 {
+		t.Fatalf("valid Approval result=%#v calendar effects=%d", result, events.count)
+	}
+	if result := approveMeeting(t, owner, proposal.ProposalID, validToken); !result.IsError || events.count != 1 {
+		t.Fatalf("replayed Approval result=%#v calendar effects=%d", result, events.count)
+	}
+}
+
+func approveMeeting(t *testing.T, session *mcp.ClientSession, proposalID meeting.ProposalID, approval string) *mcp.CallToolResult {
+	t.Helper()
+	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+		Name:      "calendar.approve_meeting_proposal",
+		Arguments: map[string]any{"proposal_id": proposalID, "approval": approval},
+	})
+	if err != nil {
+		t.Fatalf("approve Meeting Proposal: %v", err)
+	}
+	return result
 }
 
 func TestCalendarEventDetailsAreRejectedAtTheMCPBoundary(t *testing.T) {
@@ -571,6 +705,29 @@ func (availabilityOnlyPolicy) Decide(_ context.Context, input gateway.PolicyInpu
 }
 
 func (availabilityOnlyPolicy) Health(context.Context) error { return nil }
+
+type meetingPolicy struct{}
+
+func (meetingPolicy) Decide(_ context.Context, input gateway.PolicyInput) (gateway.PolicyDecision, error) {
+	allowed := input.Tool == "calendar.submit_meeting_proposal" || input.Tool == "calendar.review_meeting_proposal" || input.Tool == "calendar.approve_meeting_proposal" || input.Tool == "calendar.deny_meeting_proposal"
+	return gateway.PolicyDecision{Allow: allowed, DecisionID: "decision-meeting", PolicyRevision: "ticket-04"}, nil
+}
+
+func (meetingPolicy) Health(context.Context) error { return nil }
+
+type unreachableCalendarEvents struct{ t *testing.T }
+
+func (calendar unreachableCalendarEvents) CreateEvent(context.Context, meeting.EventArguments) (meeting.Event, error) {
+	calendar.t.Fatal("Meeting Proposal reached calendar before exact Approval")
+	return meeting.Event{}, nil
+}
+
+type countingCalendarEvents struct{ count int }
+
+func (calendar *countingCalendarEvents) CreateEvent(_ context.Context, _ meeting.EventArguments) (meeting.Event, error) {
+	calendar.count++
+	return meeting.Event{EventID: "event-1", Created: calendar.count == 1}, nil
+}
 
 type availableCalendar struct{}
 

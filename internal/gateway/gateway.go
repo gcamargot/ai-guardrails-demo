@@ -6,9 +6,12 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/nahtao97/agent-tool-guardrails/internal/approvalauthority"
 	"github.com/nahtao97/agent-tool-guardrails/internal/freebusy"
+	"github.com/nahtao97/agent-tool-guardrails/internal/meeting"
 )
 
 type Subject string
@@ -22,6 +25,10 @@ type StationID string
 const (
 	coffeeStationStatusTool ToolName        = "coffee_station.get_status"
 	findAvailabilityTool    ToolName        = "calendar.find_availability"
+	submitMeetingTool       ToolName        = "calendar.submit_meeting_proposal"
+	reviewMeetingTool       ToolName        = "calendar.review_meeting_proposal"
+	approveMeetingTool      ToolName        = "calendar.approve_meeting_proposal"
+	denyMeetingTool         ToolName        = "calendar.deny_meeting_proposal"
 	discoverOperation       PolicyOperation = "discover"
 	executeOperation        PolicyOperation = "execute"
 )
@@ -82,12 +89,30 @@ type Calendar interface {
 	Health(context.Context) error
 }
 
+type ProposalStore interface {
+	Submit(string, meeting.ProposalInput) meeting.Proposal
+	Review(meeting.ProposalID) (meeting.Operation, error)
+	Deny(meeting.ProposalID) (meeting.Denial, error)
+}
+
+type CalendarEvents interface {
+	CreateEvent(context.Context, meeting.EventArguments) (meeting.Event, error)
+}
+
+type ApprovalConsumer interface {
+	Consume(context.Context, string, approvalauthority.Binding) error
+	Health(context.Context) error
+}
+
 type Dependencies struct {
-	Identity      IdentityVerifier
-	Channel       Channel
-	Policy        PolicyClient
-	CoffeeStation CoffeeStation
-	Calendar      Calendar
+	Identity       IdentityVerifier
+	Channel        Channel
+	Policy         PolicyClient
+	CoffeeStation  CoffeeStation
+	Calendar       Calendar
+	Proposals      ProposalStore
+	Approvals      ApprovalConsumer
+	CalendarEvents CalendarEvents
 }
 
 type coffeeStationStatusInput struct {
@@ -97,6 +122,22 @@ type coffeeStationStatusInput struct {
 type findAvailabilityInput struct {
 	Start freebusy.RFC3339 `json:"start" jsonschema:"RFC3339 start of the requested availability window"`
 	End   freebusy.RFC3339 `json:"end" jsonschema:"RFC3339 end of the requested availability window"`
+}
+
+type submitMeetingInput struct {
+	Start   freebusy.RFC3339 `json:"start" jsonschema:"RFC3339 start of the proposed meeting"`
+	End     freebusy.RFC3339 `json:"end" jsonschema:"RFC3339 end of the proposed meeting"`
+	Reason  string           `json:"reason" jsonschema:"reason shown to the Owner"`
+	Contact string           `json:"contact" jsonschema:"requester contact shown to the Owner"`
+}
+
+type proposalReferenceInput struct {
+	ProposalID meeting.ProposalID `json:"proposal_id"`
+}
+
+type approveMeetingInput struct {
+	ProposalID meeting.ProposalID `json:"proposal_id"`
+	Approval   string             `json:"approval" jsonschema:"short-lived exact Approval from the Approval Authority"`
 }
 
 func NewHandler(deps Dependencies) http.Handler {
@@ -258,7 +299,154 @@ func newMCPServer(deps Dependencies, securityContext SecurityContext) *mcp.Serve
 		return result, view, nil
 	})
 
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        string(submitMeetingTool),
+		Description: "Record a Meeting Proposal without creating a calendar event.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input submitMeetingInput) (*mcp.CallToolResult, meeting.Proposal, error) {
+		start, startErr := input.Start.Time()
+		end, endErr := input.End.Time()
+		reason := strings.TrimSpace(input.Reason)
+		contact := strings.TrimSpace(input.Contact)
+		if startErr != nil || endErr != nil || !end.After(start) || end.Sub(start) > 2*time.Hour ||
+			reason == "" || contact == "" || len(reason) > 200 || len(contact) > 320 {
+			result := &mcp.CallToolResult{}
+			result.SetError(errors.New("invalid Meeting Proposal"))
+			return result, meeting.Proposal{}, nil
+		}
+		decision, err := deps.Policy.Decide(ctx, PolicyInput{
+			SecurityContext: securityContext,
+			Operation:       executeOperation,
+			Tool:            submitMeetingTool,
+			Arguments:       input,
+		})
+		if err != nil {
+			return nil, meeting.Proposal{}, err
+		}
+		result := policyResult(decision)
+		if !decision.Allow {
+			result.SetError(errors.New("tool call denied by policy"))
+			return result, meeting.Proposal{}, nil
+		}
+		if deps.Proposals == nil {
+			return nil, meeting.Proposal{}, errors.New("Meeting Proposal store is unavailable")
+		}
+		proposal := deps.Proposals.Submit(string(securityContext.Subject), meeting.ProposalInput{
+			Start: start, End: end, Reason: reason, Contact: contact,
+		})
+		return result, proposal, nil
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        string(reviewMeetingTool),
+		Description: "Show the Owner the exact normalized calendar operation for a Meeting Proposal.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input proposalReferenceInput) (*mcp.CallToolResult, meeting.Operation, error) {
+		decision, err := deps.Policy.Decide(ctx, PolicyInput{
+			SecurityContext: securityContext,
+			Operation:       executeOperation,
+			Tool:            reviewMeetingTool,
+			Arguments:       input,
+		})
+		if err != nil {
+			return nil, meeting.Operation{}, err
+		}
+		result := policyResult(decision)
+		if !decision.Allow {
+			result.SetError(errors.New("tool call denied by policy"))
+			return result, meeting.Operation{}, nil
+		}
+		if deps.Proposals == nil {
+			return nil, meeting.Operation{}, errors.New("Meeting Proposal store is unavailable")
+		}
+		operation, err := deps.Proposals.Review(input.ProposalID)
+		if err != nil {
+			result.SetError(err)
+			return result, meeting.Operation{}, nil
+		}
+		return result, operation, nil
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        string(approveMeetingTool),
+		Description: "Create one calendar event after consuming the Owner's exact Approval.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input approveMeetingInput) (*mcp.CallToolResult, meeting.Event, error) {
+		decision, err := deps.Policy.Decide(ctx, PolicyInput{
+			SecurityContext: securityContext,
+			Operation:       executeOperation,
+			Tool:            approveMeetingTool,
+			Arguments:       proposalReferenceInput{ProposalID: input.ProposalID},
+		})
+		if err != nil {
+			return nil, meeting.Event{}, err
+		}
+		result := policyResult(decision)
+		if !decision.Allow {
+			result.SetError(errors.New("tool call denied by policy"))
+			return result, meeting.Event{}, nil
+		}
+		if deps.Proposals == nil || deps.Approvals == nil || deps.CalendarEvents == nil {
+			return nil, meeting.Event{}, errors.New("approved meeting dependencies are unavailable")
+		}
+		operation, err := deps.Proposals.Review(input.ProposalID)
+		if err != nil {
+			result.SetError(err)
+			return result, meeting.Event{}, nil
+		}
+		binding := approvalauthority.Binding{
+			Subject:   string(securityContext.Subject),
+			Actor:     string(securityContext.Actor),
+			Tool:      operation.Tool,
+			Arguments: operation.Arguments,
+			TraceID:   string(operation.TraceID),
+		}
+		if err := deps.Approvals.Consume(ctx, input.Approval, binding); err != nil {
+			result.SetError(errors.New("exact Approval denied"))
+			return result, meeting.Event{}, nil
+		}
+		event, err := deps.CalendarEvents.CreateEvent(ctx, operation.Arguments)
+		if err != nil {
+			return nil, meeting.Event{}, err
+		}
+		if event.EventID == "" {
+			result.SetError(errors.New("calendar returned an invalid event"))
+			return result, meeting.Event{}, nil
+		}
+		return result, event, nil
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        string(denyMeetingTool),
+		Description: "Record the Owner's explicit denial of a Meeting Proposal without a calendar effect.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input proposalReferenceInput) (*mcp.CallToolResult, meeting.Denial, error) {
+		decision, err := deps.Policy.Decide(ctx, PolicyInput{
+			SecurityContext: securityContext, Operation: executeOperation, Tool: denyMeetingTool, Arguments: input,
+		})
+		if err != nil {
+			return nil, meeting.Denial{}, err
+		}
+		result := policyResult(decision)
+		if !decision.Allow {
+			result.SetError(errors.New("tool call denied by policy"))
+			return result, meeting.Denial{}, nil
+		}
+		if deps.Proposals == nil {
+			return nil, meeting.Denial{}, errors.New("Meeting Proposal store is unavailable")
+		}
+		denial, err := deps.Proposals.Deny(input.ProposalID)
+		if err != nil {
+			result.SetError(err)
+			return result, meeting.Denial{}, nil
+		}
+		return result, denial, nil
+	})
+
 	return server
+}
+
+func policyResult(decision PolicyDecision) *mcp.CallToolResult {
+	return &mcp.CallToolResult{Meta: mcp.Meta{
+		"decision_id":     decision.DecisionID,
+		"policy_revision": decision.PolicyRevision,
+	}}
 }
 
 func healthHandler(deps Dependencies) http.HandlerFunc {

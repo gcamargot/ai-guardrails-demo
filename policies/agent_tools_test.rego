@@ -2,8 +2,49 @@ package agent_tools_test
 
 import data.agent_tools.decision
 
+test_external_subject_can_submit_proposal_but_not_approve if {
+	proposal := decision with input as {
+		"security_context": {
+			"subject": "external-alice-subject-id", "actor": "telegram-agent", "channel": "telegram",
+			"turn_capabilities": ["calendar.meeting.propose"],
+		},
+		"operation": "execute", "tool": "calendar.submit_meeting_proposal",
+		"arguments": {"start": "2026-08-03T13:00:00Z", "end": "2026-08-03T13:30:00Z"},
+	}
+	proposal.allow
+	not decision.allow with input as {
+		"security_context": {
+			"subject": "external-alice-subject-id", "actor": "telegram-agent", "channel": "telegram",
+			"turn_capabilities": ["calendar.meeting.approve"],
+		},
+		"operation": "execute", "tool": "calendar.approve_meeting_proposal",
+		"arguments": {"proposal_id": "proposal-1"},
+	}
+}
+
+test_owner_can_review_and_approve_exact_proposal if {
+	review := decision with input as {
+		"security_context": {
+			"subject": "owner-subject-id", "actor": "telegram-agent", "channel": "telegram",
+			"turn_capabilities": ["calendar.meeting.approve"],
+		},
+		"operation": "execute", "tool": "calendar.review_meeting_proposal",
+		"arguments": {"proposal_id": "proposal-1"},
+	}
+	review.allow
+	approve := decision with input as {
+		"security_context": {
+			"subject": "owner-subject-id", "actor": "telegram-agent", "channel": "telegram",
+			"turn_capabilities": ["calendar.meeting.approve"],
+		},
+		"operation": "execute", "tool": "calendar.approve_meeting_proposal",
+		"arguments": {"proposal_id": "proposal-1"},
+	}
+	approve.allow
+}
+
 test_owner_can_read_demo_station if {
-	decision == {"allow": true, "policy_revision": "ticket-03", "reason": "owner_demo_station"} with input as {
+	decision == {"allow": true, "policy_revision": "ticket-04", "reason": "owner_demo_station"} with input as {
 		"security_context": {
 			"subject": "owner-subject-id",
 			"actor": "telegram-agent",
@@ -17,7 +58,7 @@ test_owner_can_read_demo_station if {
 }
 
 test_coding_agent_can_read_for_same_owner if {
-	decision == {"allow": true, "policy_revision": "ticket-03", "reason": "owner_demo_station"} with input as {
+	decision == {"allow": true, "policy_revision": "ticket-04", "reason": "owner_demo_station"} with input as {
 		"security_context": {
 			"subject": "owner-subject-id",
 			"actor": "coding-agent",
@@ -31,7 +72,7 @@ test_coding_agent_can_read_for_same_owner if {
 }
 
 test_external_subject_is_denied if {
-	decision == {"allow": false, "policy_revision": "ticket-03", "reason": "default_deny"} with input as {
+	decision == {"allow": false, "policy_revision": "ticket-04", "reason": "default_deny"} with input as {
 		"security_context": {
 			"subject": "external",
 			"actor": "telegram-agent",
@@ -45,7 +86,7 @@ test_external_subject_is_denied if {
 }
 
 test_other_station_is_denied if {
-	decision == {"allow": false, "policy_revision": "ticket-03", "reason": "default_deny"} with input as {
+	decision == {"allow": false, "policy_revision": "ticket-04", "reason": "default_deny"} with input as {
 		"security_context": {
 			"subject": "owner-subject-id",
 			"actor": "telegram-agent",
@@ -59,7 +100,7 @@ test_other_station_is_denied if {
 }
 
 test_owner_can_discover_tool if {
-	decision == {"allow": true, "policy_revision": "ticket-03", "reason": "owner_tool_discovery"} with input as {
+	decision == {"allow": true, "policy_revision": "ticket-04", "reason": "owner_tool_discovery"} with input as {
 		"security_context": {
 			"subject": "owner-subject-id",
 			"actor": "telegram-agent",
@@ -85,7 +126,7 @@ test_external_subject_cannot_discover_tool if {
 }
 
 test_external_subject_can_find_availability_in_working_window if {
-	decision == {"allow": true, "policy_revision": "ticket-03", "reason": "external_free_busy"} with input as {
+	decision == {"allow": true, "policy_revision": "ticket-04", "reason": "external_free_busy"} with input as {
 		"security_context": {
 			"subject": "external-alice-subject-id",
 			"actor": "telegram-agent",
@@ -119,7 +160,7 @@ test_external_subject_is_denied_outside_future_window if {
 }
 
 test_external_subject_can_discover_only_availability if {
-	decision == {"allow": true, "policy_revision": "ticket-03", "reason": "external_availability_discovery"} with input as {
+	decision == {"allow": true, "policy_revision": "ticket-04", "reason": "external_availability_discovery"} with input as {
 		"security_context": {
 			"subject": "external-alice-subject-id",
 			"actor": "telegram-agent",

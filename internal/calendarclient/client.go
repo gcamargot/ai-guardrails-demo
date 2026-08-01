@@ -1,6 +1,7 @@
 package calendarclient
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/nahtao97/agent-tool-guardrails/internal/freebusy"
+	"github.com/nahtao97/agent-tool-guardrails/internal/meeting"
 )
 
 const maxResponseBytes = 1 << 20
@@ -53,6 +55,34 @@ func (client *Client) FindAvailability(ctx context.Context, query freebusy.Windo
 		return freebusy.View{}, fmt.Errorf("decode minimized Free/Busy View: %w", err)
 	}
 	return view, nil
+}
+
+func (client *Client) CreateEvent(ctx context.Context, arguments meeting.EventArguments) (meeting.Event, error) {
+	body, err := json.Marshal(arguments)
+	if err != nil {
+		return meeting.Event{}, fmt.Errorf("encode calendar event: %w", err)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, client.baseURL+"/events", bytes.NewReader(body))
+	if err != nil {
+		return meeting.Event{}, fmt.Errorf("create calendar event request: %w", err)
+	}
+	request.Header.Set("Authorization", "Bearer "+client.credential)
+	request.Header.Set("Content-Type", "application/json")
+	response, err := client.httpClient.Do(request)
+	if err != nil {
+		return meeting.Event{}, fmt.Errorf("create calendar event: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK && response.StatusCode != http.StatusCreated {
+		return meeting.Event{}, fmt.Errorf("calendar event returned HTTP %d", response.StatusCode)
+	}
+	var event meeting.Event
+	decoder := json.NewDecoder(io.LimitReader(response.Body, maxResponseBytes))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&event); err != nil {
+		return meeting.Event{}, fmt.Errorf("decode calendar event: %w", err)
+	}
+	return event, nil
 }
 
 func (client *Client) Health(ctx context.Context) error {

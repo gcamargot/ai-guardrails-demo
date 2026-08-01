@@ -7,8 +7,11 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/nahtao97/agent-tool-guardrails/internal/approvalauthority"
+	"github.com/nahtao97/agent-tool-guardrails/internal/meeting"
 	"github.com/nahtao97/agent-tool-guardrails/internal/oidcclient"
 	"golang.org/x/oauth2"
 )
@@ -21,7 +24,15 @@ type GatewayClientConfig struct {
 	Subject       Subject
 	Username      string
 	Password      string
+	OwnerSubject  Subject
+	OwnerUsername string
+	OwnerPassword string
+	Approvals     ApprovalIssuer
 	HTTPClient    *http.Client
+}
+
+type ApprovalIssuer interface {
+	Issue(context.Context, approvalauthority.Binding) (string, error)
 }
 
 type GatewayClient struct {
@@ -37,32 +48,7 @@ func (client *GatewayClient) FindAvailability(
 	identity TrustedTelegramIdentity,
 	query AvailabilityQuery,
 ) ([]AvailableInterval, error) {
-	if identity.Subject != client.config.Subject || identity.Actor != "telegram-agent" || identity.Channel != "telegram" {
-		return nil, errors.New("trusted Telegram identity does not match gateway credentials")
-	}
-	token, err := (oidcclient.Client{
-		Endpoint:     client.config.TokenEndpoint,
-		ClientID:     client.config.ClientID,
-		ClientSecret: client.config.ClientSecret,
-		HTTPClient:   client.config.HTTPClient,
-	}).PasswordToken(ctx, client.config.Username, client.config.Password)
-	if err != nil {
-		return nil, err
-	}
-	baseTransport := http.DefaultTransport
-	if client.config.HTTPClient != nil && client.config.HTTPClient.Transport != nil {
-		baseTransport = client.config.HTTPClient.Transport
-	}
-	authorizedClient := &http.Client{Transport: &oauth2.Transport{
-		Source: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token}),
-		Base:   baseTransport,
-	}}
-	mcpClient := mcp.NewClient(&mcp.Implementation{Name: "telegram-adapter", Version: "v0.3.0"}, nil)
-	session, err := mcpClient.Connect(ctx, &mcp.StreamableClientTransport{
-		Endpoint:             client.config.Endpoint,
-		DisableStandaloneSSE: true,
-		HTTPClient:           authorizedClient,
-	}, nil)
+	session, err := client.connect(ctx, identity)
 	if err != nil {
 		return nil, fmt.Errorf("connect Telegram Actor to gateway: %w", err)
 	}
@@ -94,4 +80,147 @@ func (client *GatewayClient) FindAvailability(
 		return nil, fmt.Errorf("decode Free/Busy View: %w", err)
 	}
 	return view.AvailableIntervals, nil
+}
+
+func (client *GatewayClient) SubmitProposal(ctx context.Context, identity TrustedTelegramIdentity, input meeting.ProposalInput) (meeting.Proposal, error) {
+	session, err := client.connect(ctx, identity)
+	if err != nil {
+		return meeting.Proposal{}, err
+	}
+	defer session.Close()
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "calendar.submit_meeting_proposal",
+		Arguments: map[string]any{
+			"start": input.Start.UTC().Format(time.RFC3339), "end": input.End.UTC().Format(time.RFC3339),
+			"reason": input.Reason, "contact": input.Contact,
+		},
+	})
+	if err != nil || result.IsError {
+		return meeting.Proposal{}, toolError("submit Meeting Proposal", result, err)
+	}
+	var proposal meeting.Proposal
+	if err := decodeStructured(result.StructuredContent, &proposal); err != nil {
+		return meeting.Proposal{}, err
+	}
+	return proposal, nil
+}
+
+func (client *GatewayClient) ReviewProposal(ctx context.Context, identity TrustedTelegramIdentity, id meeting.ProposalID) (meeting.Operation, error) {
+	session, err := client.connect(ctx, identity)
+	if err != nil {
+		return meeting.Operation{}, err
+	}
+	defer session.Close()
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "calendar.review_meeting_proposal", Arguments: map[string]any{"proposal_id": id}})
+	if err != nil || result.IsError {
+		return meeting.Operation{}, toolError("review Meeting Proposal", result, err)
+	}
+	var operation meeting.Operation
+	if err := decodeStructured(result.StructuredContent, &operation); err != nil {
+		return meeting.Operation{}, err
+	}
+	return operation, nil
+}
+
+func (client *GatewayClient) ApproveProposal(ctx context.Context, identity TrustedTelegramIdentity, id meeting.ProposalID) (meeting.Event, error) {
+	if identity.Subject != client.config.OwnerSubject || client.config.Approvals == nil {
+		return meeting.Event{}, errors.New("only the Owner can request an exact Approval")
+	}
+	operation, err := client.ReviewProposal(ctx, identity, id)
+	if err != nil {
+		return meeting.Event{}, err
+	}
+	approval, err := client.config.Approvals.Issue(ctx, approvalauthority.Binding{
+		Subject: string(identity.Subject), Actor: string(identity.Actor), Tool: operation.Tool,
+		Arguments: operation.Arguments, TraceID: string(operation.TraceID),
+	})
+	if err != nil {
+		return meeting.Event{}, fmt.Errorf("issue exact Approval: %w", err)
+	}
+	session, err := client.connect(ctx, identity)
+	if err != nil {
+		return meeting.Event{}, err
+	}
+	defer session.Close()
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "calendar.approve_meeting_proposal", Arguments: map[string]any{"proposal_id": id, "approval": approval},
+	})
+	if err != nil || result.IsError {
+		return meeting.Event{}, toolError("approve Meeting Proposal", result, err)
+	}
+	var event meeting.Event
+	if err := decodeStructured(result.StructuredContent, &event); err != nil {
+		return meeting.Event{}, err
+	}
+	return event, nil
+}
+
+func (client *GatewayClient) DenyProposal(ctx context.Context, identity TrustedTelegramIdentity, id meeting.ProposalID) (meeting.Denial, error) {
+	if identity.Subject != client.config.OwnerSubject {
+		return meeting.Denial{}, errors.New("only the Owner can deny a Meeting Proposal")
+	}
+	session, err := client.connect(ctx, identity)
+	if err != nil {
+		return meeting.Denial{}, err
+	}
+	defer session.Close()
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "calendar.deny_meeting_proposal", Arguments: map[string]any{"proposal_id": id}})
+	if err != nil || result.IsError {
+		return meeting.Denial{}, toolError("deny Meeting Proposal", result, err)
+	}
+	var denial meeting.Denial
+	if err := decodeStructured(result.StructuredContent, &denial); err != nil {
+		return meeting.Denial{}, err
+	}
+	return denial, nil
+}
+
+func (client *GatewayClient) connect(ctx context.Context, identity TrustedTelegramIdentity) (*mcp.ClientSession, error) {
+	if identity.Actor != "telegram-agent" || identity.Channel != "telegram" {
+		return nil, errors.New("trusted Telegram identity does not match gateway credentials")
+	}
+	username, password := client.config.Username, client.config.Password
+	if identity.Subject == client.config.OwnerSubject {
+		username, password = client.config.OwnerUsername, client.config.OwnerPassword
+	} else if identity.Subject != client.config.Subject {
+		return nil, errors.New("trusted Telegram Subject does not match gateway credentials")
+	}
+	token, err := (oidcclient.Client{
+		Endpoint: client.config.TokenEndpoint, ClientID: client.config.ClientID,
+		ClientSecret: client.config.ClientSecret, HTTPClient: client.config.HTTPClient,
+	}).PasswordToken(ctx, username, password)
+	if err != nil {
+		return nil, err
+	}
+	baseTransport := http.DefaultTransport
+	if client.config.HTTPClient != nil && client.config.HTTPClient.Transport != nil {
+		baseTransport = client.config.HTTPClient.Transport
+	}
+	authorizedClient := &http.Client{Transport: &oauth2.Transport{
+		Source: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token}), Base: baseTransport,
+	}}
+	mcpClient := mcp.NewClient(&mcp.Implementation{Name: "telegram-adapter", Version: "v0.4.0"}, nil)
+	return mcpClient.Connect(ctx, &mcp.StreamableClientTransport{
+		Endpoint: client.config.Endpoint, DisableStandaloneSSE: true, HTTPClient: authorizedClient,
+	}, nil)
+}
+
+func decodeStructured(value any, destination any) error {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(encoded)))
+	decoder.DisallowUnknownFields()
+	return decoder.Decode(destination)
+}
+
+func toolError(action string, result *mcp.CallToolResult, err error) error {
+	if err != nil {
+		return fmt.Errorf("%s: %w", action, err)
+	}
+	if result != nil && result.IsError {
+		return fmt.Errorf("%s: %w", action, result.GetError())
+	}
+	return errors.New(action + " failed")
 }
