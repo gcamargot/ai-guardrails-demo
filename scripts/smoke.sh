@@ -7,4 +7,4 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 docker compose up --build --wait gateway
-docker compose --profile test run --rm smoke
+docker compose --profile test run --build --rm smoke
