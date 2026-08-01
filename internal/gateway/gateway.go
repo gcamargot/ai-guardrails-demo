@@ -154,8 +154,8 @@ type approveMeetingInput struct {
 }
 
 type searchOutlookInput struct {
-	Query string `json:"query" jsonschema:"exact mailbox search requested by the Owner"`
-	Limit int    `json:"limit" jsonschema:"maximum number of minimized matches"`
+	Query outlook.Query `json:"query" jsonschema:"exact mailbox search requested by the Owner"`
+	Limit int           `json:"limit" jsonschema:"maximum number of minimized matches"`
 }
 
 type readOutlookInput struct {
@@ -457,9 +457,10 @@ func newMCPServer(deps Dependencies, securityContext SecurityContext) *mcp.Serve
 		Name:        string(searchOutlookTool),
 		Description: "Search the isolated demo mailbox and return minimized message metadata.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input searchOutlookInput) (*mcp.CallToolResult, searchOutlookOutput, error) {
-		if input.Query != strings.TrimSpace(input.Query) || input.Query == "" || len(input.Query) > 100 || input.Limit < 1 || input.Limit > 5 {
+		query := outlook.SearchQuery{Query: input.Query, Limit: input.Limit}
+		if err := query.Validate(); err != nil {
 			result := &mcp.CallToolResult{}
-			result.SetError(errors.New("invalid Outlook search query"))
+			result.SetError(err)
 			return result, searchOutlookOutput{}, nil
 		}
 		result, allowed, err := authorize(ctx, deps.Policy, securityContext, searchOutlookTool, input)
@@ -472,12 +473,12 @@ func newMCPServer(deps Dependencies, securityContext SecurityContext) *mcp.Serve
 		if deps.Outlook == nil {
 			return nil, searchOutlookOutput{}, errors.New("Outlook is unavailable")
 		}
-		messages, err := deps.Outlook.SearchMessages(ctx, outlook.SearchQuery{Query: input.Query, Limit: input.Limit})
+		messages, err := deps.Outlook.SearchMessages(ctx, query)
 		if err != nil {
 			return nil, searchOutlookOutput{}, err
 		}
-		if len(messages) > input.Limit || !validOutlookSearchResults(messages) {
-			result.SetError(errors.New("Outlook returned invalid minimized search results"))
+		if err := outlook.ValidateSearchResults(messages, input.Limit); err != nil {
+			result.SetError(err)
 			return result, searchOutlookOutput{}, nil
 		}
 		return result, searchOutlookOutput{Messages: messages}, nil
@@ -487,9 +488,9 @@ func newMCPServer(deps Dependencies, securityContext SecurityContext) *mcp.Serve
 		Name:        string(readOutlookTool),
 		Description: "Read one exact demo message as minimized Untrusted Content.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input readOutlookInput) (*mcp.CallToolResult, outlook.MessageView, error) {
-		if !validOutlookMessageID(input.MessageID) {
+		if err := input.MessageID.Validate(); err != nil {
 			result := &mcp.CallToolResult{}
-			result.SetError(errors.New("invalid Outlook message identifier"))
+			result.SetError(err)
 			return result, outlook.MessageView{}, nil
 		}
 		result, allowed, err := authorize(ctx, deps.Policy, securityContext, readOutlookTool, input)
@@ -506,49 +507,14 @@ func newMCPServer(deps Dependencies, securityContext SecurityContext) *mcp.Serve
 		if err != nil {
 			return nil, outlook.MessageView{}, err
 		}
-		if view.MessageID != input.MessageID || strings.TrimSpace(view.Sender) == "" || strings.TrimSpace(view.Subject) == "" ||
-			strings.TrimSpace(view.UntrustedContent) == "" || len(view.UntrustedContent) > 500 {
-			result.SetError(errors.New("Outlook returned an invalid minimized Message View"))
-			return result, outlook.MessageView{}, nil
-		}
-		if _, err := time.Parse(time.RFC3339, view.ReceivedAt); err != nil {
-			result.SetError(errors.New("Outlook returned an invalid minimized Message View"))
+		if err := view.Validate(input.MessageID); err != nil {
+			result.SetError(err)
 			return result, outlook.MessageView{}, nil
 		}
 		return result, view, nil
 	})
 
 	return server
-}
-
-func validOutlookMessageID(messageID outlook.MessageID) bool {
-	if len(messageID) == 0 || len(messageID) > 80 {
-		return false
-	}
-	for _, character := range messageID {
-		if (character < 'a' || character > 'z') && (character < 'A' || character > 'Z') &&
-			(character < '0' || character > '9') && character != '-' && character != '_' {
-			return false
-		}
-	}
-	return true
-}
-
-func validOutlookSearchResults(messages []outlook.SearchResult) bool {
-	seen := make(map[outlook.MessageID]struct{}, len(messages))
-	for _, message := range messages {
-		if !validOutlookMessageID(message.MessageID) || strings.TrimSpace(message.Sender) == "" || strings.TrimSpace(message.Subject) == "" {
-			return false
-		}
-		if _, err := time.Parse(time.RFC3339, message.ReceivedAt); err != nil {
-			return false
-		}
-		if _, duplicate := seen[message.MessageID]; duplicate {
-			return false
-		}
-		seen[message.MessageID] = struct{}{}
-	}
-	return true
 }
 
 func policyResult(decision PolicyDecision) *mcp.CallToolResult {

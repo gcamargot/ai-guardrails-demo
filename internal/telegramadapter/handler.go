@@ -29,6 +29,7 @@ type TrustedTelegramIdentity struct {
 type AvailabilityQuery = freebusy.Window
 type AvailableInterval = freebusy.AvailableInterval
 type OutlookMessageID = outlook.MessageID
+type OutlookQuery = outlook.Query
 type OutlookSearchQuery = outlook.SearchQuery
 type OutlookSearchResult = outlook.SearchResult
 type OutlookMessageView = outlook.MessageView
@@ -69,6 +70,7 @@ func NewHandler(config Config) http.Handler {
 		client = http.DefaultClient
 	}
 	limits := newRateLimits(config)
+	commands := commandRouter{config: config, limits: limits}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(response http.ResponseWriter, _ *http.Request) {
 		response.Header().Set("Content-Type", "application/json")
@@ -100,109 +102,7 @@ func NewHandler(config Config) http.Handler {
 		}
 
 		identity := TrustedTelegramIdentity{Subject: subject, Actor: "telegram-agent", Channel: "telegram"}
-		if strings.HasPrefix(update.Message.Text, "/outlook-search ") {
-			query := strings.TrimSpace(strings.TrimPrefix(update.Message.Text, "/outlook-search "))
-			if subject != config.OwnerSubject || config.Outlook == nil {
-				http.Error(response, "forbidden", http.StatusForbidden)
-				return
-			}
-			if query == "" || len(query) > 100 {
-				http.Error(response, "invalid Outlook search", http.StatusBadRequest)
-				return
-			}
-			messages, err := config.Outlook.SearchMessages(request.Context(), identity, OutlookSearchQuery{Query: query, Limit: 5})
-			if err != nil {
-				http.Error(response, "Outlook search failed", http.StatusBadGateway)
-				return
-			}
-			response.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(response).Encode(struct {
-				Messages []OutlookSearchResult `json:"messages"`
-			}{Messages: messages})
-			return
-		}
-		if strings.HasPrefix(update.Message.Text, "/outlook-read ") {
-			messageID := OutlookMessageID(strings.TrimSpace(strings.TrimPrefix(update.Message.Text, "/outlook-read ")))
-			if subject != config.OwnerSubject || config.Outlook == nil {
-				http.Error(response, "forbidden", http.StatusForbidden)
-				return
-			}
-			if messageID == "" {
-				http.Error(response, "invalid Outlook message", http.StatusBadRequest)
-				return
-			}
-			message, err := config.Outlook.ReadMessage(request.Context(), identity, messageID)
-			if err != nil {
-				http.Error(response, "Outlook read failed", http.StatusBadGateway)
-				return
-			}
-			response.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(response).Encode(message)
-			return
-		}
-		if strings.HasPrefix(update.Message.Text, "/review ") || strings.HasPrefix(update.Message.Text, "/approve ") || strings.HasPrefix(update.Message.Text, "/deny ") {
-			if subject != config.OwnerSubject || config.Meetings == nil {
-				http.Error(response, "forbidden", http.StatusForbidden)
-				return
-			}
-			parts := strings.Fields(update.Message.Text)
-			command := parts[0]
-			if (command == "/review" && len(parts) != 2) || (command != "/review" && len(parts) != 3) {
-				http.Error(response, "review the exact Meeting Proposal before resolving it", http.StatusBadRequest)
-				return
-			}
-			proposalID := meeting.ProposalID(parts[1])
-			if proposalID == "" {
-				http.Error(response, "invalid Meeting Proposal reference", http.StatusBadRequest)
-				return
-			}
-			response.Header().Set("Content-Type", "application/json")
-			if command == "/review" {
-				operation, err := config.Meetings.ReviewProposal(request.Context(), identity, proposalID)
-				if err != nil {
-					http.Error(response, "Meeting Proposal review failed", http.StatusBadGateway)
-					return
-				}
-				_ = json.NewEncoder(response).Encode(operation)
-				return
-			}
-			if command == "/deny" {
-				denial, err := config.Meetings.DenyProposal(request.Context(), identity, proposalID, meeting.ApprovalToken(parts[2]))
-				if err != nil {
-					http.Error(response, "Meeting Proposal denial failed", http.StatusBadGateway)
-					return
-				}
-				_ = json.NewEncoder(response).Encode(denial)
-				return
-			}
-			event, err := config.Meetings.ApproveProposal(request.Context(), identity, proposalID, meeting.ApprovalToken(parts[2]))
-			if err != nil {
-				http.Error(response, "Meeting Proposal approval failed", http.StatusBadGateway)
-				return
-			}
-			_ = json.NewEncoder(response).Encode(event)
-			return
-		}
-		if strings.HasPrefix(update.Message.Text, "/propose ") {
-			if subject != config.OwnerSubject && !limits.allow(subject, "proposal") {
-				http.Error(response, "rate limit exceeded", http.StatusTooManyRequests)
-				return
-			}
-			proposalInput, err := parseProposal(strings.TrimPrefix(update.Message.Text, "/propose "))
-			if err != nil || config.Meetings == nil || subject == config.OwnerSubject {
-				http.Error(response, "invalid Meeting Proposal", http.StatusBadRequest)
-				return
-			}
-			proposal, err := config.Meetings.SubmitProposal(request.Context(), identity, proposalInput)
-			if err != nil {
-				http.Error(response, "Meeting Proposal failed", http.StatusBadGateway)
-				return
-			}
-			response.Header().Set("Content-Type", "application/json")
-			response.WriteHeader(http.StatusAccepted)
-			_ = json.NewEncoder(response).Encode(struct {
-				MeetingProposal meeting.Proposal `json:"meeting_proposal"`
-			}{MeetingProposal: proposal})
+		if commands.Route(response, request, subject, identity, update.Message.Text) {
 			return
 		}
 
@@ -226,6 +126,135 @@ func NewHandler(config Config) http.Handler {
 		}{AvailableIntervals: intervals})
 	})
 	return mux
+}
+
+type commandRouter struct {
+	config Config
+	limits *rateLimits
+}
+
+func (router commandRouter) Route(response http.ResponseWriter, request *http.Request, subject Subject, identity TrustedTelegramIdentity, command string) bool {
+	switch {
+	case strings.HasPrefix(command, "/outlook-search "):
+		router.handleOutlookSearch(response, request, subject, identity, command)
+		return true
+	case strings.HasPrefix(command, "/outlook-read "):
+		router.handleOutlookRead(response, request, subject, identity, command)
+		return true
+	case strings.HasPrefix(command, "/review "), strings.HasPrefix(command, "/approve "), strings.HasPrefix(command, "/deny "):
+		router.handleMeetingResolution(response, request, subject, identity, command)
+		return true
+	case strings.HasPrefix(command, "/propose "):
+		router.handleMeetingProposal(response, request, subject, identity, command)
+		return true
+	default:
+		return false
+	}
+}
+
+func (router commandRouter) handleOutlookSearch(response http.ResponseWriter, request *http.Request, subject Subject, identity TrustedTelegramIdentity, command string) {
+	if subject != router.config.OwnerSubject || router.config.Outlook == nil {
+		http.Error(response, "forbidden", http.StatusForbidden)
+		return
+	}
+	query := OutlookSearchQuery{Query: OutlookQuery(strings.TrimSpace(strings.TrimPrefix(command, "/outlook-search "))), Limit: 5}
+	if err := query.Validate(); err != nil {
+		http.Error(response, "invalid Outlook search", http.StatusBadRequest)
+		return
+	}
+	messages, err := router.config.Outlook.SearchMessages(request.Context(), identity, query)
+	if err != nil {
+		http.Error(response, "Outlook search failed", http.StatusBadGateway)
+		return
+	}
+	response.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(response).Encode(struct {
+		Messages []OutlookSearchResult `json:"messages"`
+	}{Messages: messages})
+}
+
+func (router commandRouter) handleOutlookRead(response http.ResponseWriter, request *http.Request, subject Subject, identity TrustedTelegramIdentity, command string) {
+	if subject != router.config.OwnerSubject || router.config.Outlook == nil {
+		http.Error(response, "forbidden", http.StatusForbidden)
+		return
+	}
+	messageID := OutlookMessageID(strings.TrimSpace(strings.TrimPrefix(command, "/outlook-read ")))
+	if err := messageID.Validate(); err != nil {
+		http.Error(response, "invalid Outlook message", http.StatusBadRequest)
+		return
+	}
+	message, err := router.config.Outlook.ReadMessage(request.Context(), identity, messageID)
+	if err != nil {
+		http.Error(response, "Outlook read failed", http.StatusBadGateway)
+		return
+	}
+	response.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(response).Encode(message)
+}
+
+func (router commandRouter) handleMeetingResolution(response http.ResponseWriter, request *http.Request, subject Subject, identity TrustedTelegramIdentity, text string) {
+	if subject != router.config.OwnerSubject || router.config.Meetings == nil {
+		http.Error(response, "forbidden", http.StatusForbidden)
+		return
+	}
+	parts := strings.Fields(text)
+	command := parts[0]
+	if (command == "/review" && len(parts) != 2) || (command != "/review" && len(parts) != 3) {
+		http.Error(response, "review the exact Meeting Proposal before resolving it", http.StatusBadRequest)
+		return
+	}
+	proposalID := meeting.ProposalID(parts[1])
+	if proposalID == "" {
+		http.Error(response, "invalid Meeting Proposal reference", http.StatusBadRequest)
+		return
+	}
+	response.Header().Set("Content-Type", "application/json")
+	if command == "/review" {
+		operation, err := router.config.Meetings.ReviewProposal(request.Context(), identity, proposalID)
+		if err != nil {
+			http.Error(response, "Meeting Proposal review failed", http.StatusBadGateway)
+			return
+		}
+		_ = json.NewEncoder(response).Encode(operation)
+		return
+	}
+	if command == "/deny" {
+		denial, err := router.config.Meetings.DenyProposal(request.Context(), identity, proposalID, meeting.ApprovalToken(parts[2]))
+		if err != nil {
+			http.Error(response, "Meeting Proposal denial failed", http.StatusBadGateway)
+			return
+		}
+		_ = json.NewEncoder(response).Encode(denial)
+		return
+	}
+	event, err := router.config.Meetings.ApproveProposal(request.Context(), identity, proposalID, meeting.ApprovalToken(parts[2]))
+	if err != nil {
+		http.Error(response, "Meeting Proposal approval failed", http.StatusBadGateway)
+		return
+	}
+	_ = json.NewEncoder(response).Encode(event)
+}
+
+func (router commandRouter) handleMeetingProposal(response http.ResponseWriter, request *http.Request, subject Subject, identity TrustedTelegramIdentity, command string) {
+	if subject != router.config.OwnerSubject && !router.limits.allow(subject, "proposal") {
+		http.Error(response, "rate limit exceeded", http.StatusTooManyRequests)
+		return
+	}
+	proposalInput, err := parseProposal(strings.TrimPrefix(command, "/propose "))
+	if err != nil || router.config.Meetings == nil || subject == router.config.OwnerSubject {
+		http.Error(response, "invalid Meeting Proposal", http.StatusBadRequest)
+		return
+	}
+	proposal, err := router.config.Meetings.SubmitProposal(request.Context(), identity, proposalInput)
+	if err != nil {
+		http.Error(response, "Meeting Proposal failed", http.StatusBadGateway)
+		return
+	}
+	response.Header().Set("Content-Type", "application/json")
+	response.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(response).Encode(struct {
+		MeetingProposal meeting.Proposal `json:"meeting_proposal"`
+	}{MeetingProposal: proposal})
 }
 
 type rateLimitKey struct {

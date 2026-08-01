@@ -26,7 +26,7 @@ func New(baseURL, credential string, httpClient *http.Client) *Client {
 }
 
 func (client *Client) SearchMessages(ctx context.Context, query outlook.SearchQuery) ([]outlook.SearchResult, error) {
-	values := url.Values{"query": {query.Query}, "limit": {strconv.Itoa(query.Limit)}}
+	values := url.Values{"query": {string(query.Query)}, "limit": {strconv.Itoa(query.Limit)}}
 	request, err := client.request(ctx, client.baseURL+"/messages/search?"+values.Encode())
 	if err != nil {
 		return nil, err
