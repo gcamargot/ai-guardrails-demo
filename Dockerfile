@@ -9,6 +9,9 @@ COPY internal ./internal
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/gateway ./cmd/gateway
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/coffee-station ./cmd/coffee-station
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/smoke ./cmd/smoke
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/calendar ./cmd/calendar
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/telegram-adapter ./cmd/telegram-adapter
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/qwen-simulator ./cmd/qwen-simulator
 
 FROM alpine:3.22
 RUN addgroup -S app && adduser -S -G app app

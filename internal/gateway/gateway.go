@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -20,6 +21,7 @@ type StationID string
 
 const (
 	coffeeStationStatusTool ToolName        = "coffee_station.get_status"
+	findAvailabilityTool    ToolName        = "calendar.find_availability"
 	discoverOperation       PolicyOperation = "discover"
 	executeOperation        PolicyOperation = "execute"
 )
@@ -75,15 +77,40 @@ type CoffeeStationStatus struct {
 	State     string    `json:"state"`
 }
 
+type AvailabilityQuery struct {
+	Start time.Time
+	End   time.Time
+}
+
+type AvailableInterval struct {
+	Start string `json:"start"`
+	End   string `json:"end"`
+}
+
+type FreeBusyView struct {
+	AvailableIntervals []AvailableInterval `json:"available_intervals"`
+}
+
+type Calendar interface {
+	FindAvailability(context.Context, AvailabilityQuery) (FreeBusyView, error)
+	Health(context.Context) error
+}
+
 type Dependencies struct {
 	Identity      IdentityVerifier
 	Channel       Channel
 	Policy        PolicyClient
 	CoffeeStation CoffeeStation
+	Calendar      Calendar
 }
 
 type coffeeStationStatusInput struct {
 	StationID StationID `json:"station_id" jsonschema:"the fixed identifier of the coffee station"`
+}
+
+type findAvailabilityInput struct {
+	Start string `json:"start" jsonschema:"RFC3339 start of the requested availability window"`
+	End   string `json:"end" jsonschema:"RFC3339 end of the requested availability window"`
 }
 
 func NewHandler(deps Dependencies) http.Handler {
@@ -138,15 +165,27 @@ func newMCPServer(deps Dependencies, securityContext SecurityContext) *mcp.Serve
 			if method != "tools/list" {
 				return next(ctx, method, request)
 			}
-			decision, err := deps.Policy.Decide(ctx, PolicyInput{
-				SecurityContext: securityContext,
-				Operation:       discoverOperation,
-				Tool:            coffeeStationStatusTool,
-			})
-			if err != nil || !decision.Allow {
+			result, err := next(ctx, method, request)
+			if err != nil {
+				return nil, err
+			}
+			listed, ok := result.(*mcp.ListToolsResult)
+			if !ok {
 				return &mcp.ListToolsResult{}, nil
 			}
-			return next(ctx, method, request)
+			filtered := make([]*mcp.Tool, 0, len(listed.Tools))
+			for _, tool := range listed.Tools {
+				decision, decisionErr := deps.Policy.Decide(ctx, PolicyInput{
+					SecurityContext: securityContext,
+					Operation:       discoverOperation,
+					Tool:            ToolName(tool.Name),
+				})
+				if decisionErr == nil && decision.Allow {
+					filtered = append(filtered, tool)
+				}
+			}
+			listed.Tools = filtered
+			return listed, nil
 		}
 	})
 
@@ -183,6 +222,56 @@ func newMCPServer(deps Dependencies, securityContext SecurityContext) *mcp.Serve
 		return result, status, nil
 	})
 
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        string(findAvailabilityTool),
+		Description: "Return only available intervals from the isolated demo calendar.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input findAvailabilityInput) (*mcp.CallToolResult, FreeBusyView, error) {
+		start, startErr := time.Parse(time.RFC3339, input.Start)
+		end, endErr := time.Parse(time.RFC3339, input.End)
+		if startErr != nil || endErr != nil || !end.After(start) {
+			result := &mcp.CallToolResult{}
+			result.SetError(errors.New("invalid availability window"))
+			return result, FreeBusyView{}, nil
+		}
+		decision, err := deps.Policy.Decide(ctx, PolicyInput{
+			SecurityContext: securityContext,
+			Operation:       executeOperation,
+			Tool:            findAvailabilityTool,
+			Arguments:       input,
+		})
+		if err != nil {
+			return nil, FreeBusyView{}, err
+		}
+		result := &mcp.CallToolResult{Meta: mcp.Meta{
+			"decision_id":     decision.DecisionID,
+			"policy_revision": decision.PolicyRevision,
+		}}
+		if !decision.Allow {
+			result.SetError(errors.New("tool call denied by policy"))
+			return result, FreeBusyView{}, nil
+		}
+		if deps.Calendar == nil {
+			return nil, FreeBusyView{}, errors.New("calendar is unavailable")
+		}
+		view, err := deps.Calendar.FindAvailability(ctx, AvailabilityQuery{Start: start, End: end})
+		if err != nil {
+			return nil, FreeBusyView{}, err
+		}
+		previousEnd := start
+		for _, interval := range view.AvailableIntervals {
+			intervalStart, intervalStartErr := time.Parse(time.RFC3339, interval.Start)
+			intervalEnd, intervalEndErr := time.Parse(time.RFC3339, interval.End)
+			if intervalStartErr != nil || intervalEndErr != nil ||
+				intervalStart.Before(start) || intervalEnd.After(end) ||
+				!intervalEnd.After(intervalStart) || intervalStart.Before(previousEnd) {
+				result.SetError(errors.New("calendar returned an invalid Free/Busy View"))
+				return result, FreeBusyView{}, nil
+			}
+			previousEnd = intervalEnd
+		}
+		return result, view, nil
+	})
+
 	return server
 }
 
@@ -205,6 +294,17 @@ func healthHandler(deps Dependencies) http.HandlerFunc {
 				"resource": "unavailable",
 			})
 			return
+		}
+		if deps.Calendar != nil {
+			if err := deps.Calendar.Health(request.Context()); err != nil {
+				response.WriteHeader(http.StatusServiceUnavailable)
+				_ = json.NewEncoder(response).Encode(map[string]string{
+					"status":   "unavailable",
+					"policy":   "ready",
+					"resource": "unavailable",
+				})
+				return
+			}
 		}
 		_ = json.NewEncoder(response).Encode(map[string]string{
 			"status":   "ready",

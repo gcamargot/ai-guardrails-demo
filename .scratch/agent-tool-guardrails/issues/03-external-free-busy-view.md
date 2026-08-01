@@ -4,11 +4,15 @@
 
 **Blocked by:** 02 — Authenticate a composed Security Context.
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
-- [ ] A verified Telegram identity maps to an External Subject and Telegram Actor without trusting classifier output.
-- [ ] The External Subject discovers the availability Tool but no Tool that reveals calendar event contents.
-- [ ] Availability is limited to the configured future window and working hours.
-- [ ] The response exposes available intervals but no titles, descriptions, attendees or occupied-event details.
-- [ ] Calendar credentials come from Vault and never enter the prompt, response or audit log.
-- [ ] Automated tests cover allowed availability, out-of-window requests and response minimization.
+- [x] A verified Telegram identity maps to an External Subject and Telegram Actor without trusting classifier output.
+- [x] The External Subject discovers the availability Tool but no Tool that reveals calendar event contents.
+- [x] Availability is limited to the configured future window and working hours.
+- [x] The response exposes available intervals but no titles, descriptions, attendees or occupied-event details.
+- [x] Calendar credentials come from Vault and never enter the prompt, response or audit log.
+- [x] Automated tests cover allowed availability, out-of-window requests and response minimization.
+
+## Comments
+
+- Implemented with a verified synthetic Telegram webhook, deterministic Qwen classifier, External Subject OIDC mapping, capability-filtered MCP discovery, bounded Rego policy, strict Free/Busy response controls, Vault-backed calendar credential and black-box Compose smoke.

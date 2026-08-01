@@ -32,6 +32,36 @@ services:
     networks:
       - control
 
+  vault:
+    image: hashicorp/vault:1.21.4
+    cap_add:
+      - IPC_LOCK
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: demo-vault-root-token
+      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+    networks:
+      - secrets
+    healthcheck:
+      test: ["CMD", "vault", "status", "-address=http://127.0.0.1:8200"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+  vault-init:
+    image: hashicorp/vault:1.21.4
+    environment:
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: demo-vault-root-token
+    entrypoint: /bin/sh
+    command:
+      - -ec
+      - vault kv put secret/calendar credential=demo-calendar-credential >/dev/null
+    depends_on:
+      vault:
+        condition: service_healthy
+    networks:
+      - secrets
+
   coffee-station:
     build: .
     command: /app/coffee-station
@@ -43,22 +73,48 @@ services:
       timeout: 1s
       retries: 15
 
+  calendar:
+    build: .
+    command: /app/calendar
+    environment:
+      VAULT_TOKEN: demo-vault-root-token
+      VAULT_URL: http://vault:8200
+    depends_on:
+      vault-init:
+        condition: service_completed_successfully
+    networks:
+      - protected
+      - secrets
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8083/healthz"]
+      interval: 2s
+      timeout: 1s
+      retries: 15
+
   gateway:
     build: .
     command: /app/gateway
     environment:
       AUTH_CHANNEL: streamable-http
+      CALENDAR_URL: http://calendar:8083
       COFFEE_STATION_URL: http://coffee-station:8081
       OPA_URL: http://opa:8181
       OIDC_AUDIENCE: agent-tools-gateway
       OIDC_ISSUER: http://keycloak:8080/realms/agent-tools
+      OIDC_REQUIRED_SCOPES: coffee_station.read
+      VAULT_TOKEN: demo-vault-root-token
+      VAULT_URL: http://vault:8200
     depends_on:
+      calendar:
+        condition: service_healthy
       coffee-station:
         condition: service_healthy
       keycloak:
         condition: service_healthy
       opa:
         condition: service_started
+      vault-init:
+        condition: service_completed_successfully
     ports:
       - "127.0.0.1:8080:8080"
     networks:
@@ -66,8 +122,86 @@ services:
       - control
       - identity
       - protected
+      - secrets
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/healthz"]
+      interval: 2s
+      timeout: 1s
+      retries: 15
+
+  telegram-gateway:
+    build: .
+    command: /app/gateway
+    environment:
+      AUTH_CHANNEL: telegram
+      CALENDAR_URL: http://calendar:8083
+      COFFEE_STATION_URL: http://coffee-station:8081
+      OPA_URL: http://opa:8181
+      OIDC_AUDIENCE: agent-tools-gateway
+      OIDC_ISSUER: http://keycloak:8080/realms/agent-tools
+      OIDC_REQUIRED_SCOPES: calendar.free_busy.read
+      VAULT_TOKEN: demo-vault-root-token
+      VAULT_URL: http://vault:8200
+    depends_on:
+      calendar:
+        condition: service_healthy
+      coffee-station:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+      opa:
+        condition: service_started
+      vault-init:
+        condition: service_completed_successfully
+    networks:
+      - public
+      - control
+      - identity
+      - protected
+      - secrets
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/healthz"]
+      interval: 2s
+      timeout: 1s
+      retries: 15
+
+  qwen:
+    build: .
+    command: /app/qwen-simulator
+    networks:
+      - model
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8085/healthz"]
+      interval: 2s
+      timeout: 1s
+      retries: 15
+
+  telegram-adapter:
+    build: .
+    command: /app/telegram-adapter
+    environment:
+      EXTERNAL_PASSWORD: external-demo-password
+      EXTERNAL_SUBJECT: external-alice-subject-id
+      EXTERNAL_USERNAME: external-alice
+      GATEWAY_MCP_URL: http://telegram-gateway:8080/mcp
+      KEYCLOAK_TOKEN_URL: http://keycloak:8080/realms/agent-tools/protocol/openid-connect/token
+      QWEN_URL: http://qwen:8085
+      TELEGRAM_OIDC_CLIENT_SECRET: telegram-demo-secret
+      TELEGRAM_USER_ID: "4242"
+      TELEGRAM_WEBHOOK_SECRET: demo-telegram-webhook-secret
+    depends_on:
+      qwen:
+        condition: service_healthy
+      telegram-gateway:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8084:8084"
+    networks:
+      - public
+      - identity
+      - model
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8084/healthz"]
       interval: 2s
       timeout: 1s
       retries: 15
@@ -78,8 +212,12 @@ services:
     environment:
       GATEWAY_MCP_URL: http://gateway:8080/mcp
       KEYCLOAK_TOKEN_URL: http://keycloak:8080/realms/agent-tools/protocol/openid-connect/token
+      TELEGRAM_GATEWAY_MCP_URL: http://telegram-gateway:8080/mcp
+      TELEGRAM_WEBHOOK_URL: http://telegram-adapter:8084/telegram/webhook
     depends_on:
       gateway:
+        condition: service_healthy
+      telegram-adapter:
         condition: service_healthy
     networks:
       - public
@@ -94,4 +232,8 @@ networks:
   identity:
     internal: true
   protected:
+    internal: true
+  secrets:
+    internal: true
+  model:
     internal: true

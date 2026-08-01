@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/nahtao97/agent-tool-guardrails/internal/calendarclient"
 	"github.com/nahtao97/agent-tool-guardrails/internal/gateway"
 	"golang.org/x/oauth2"
 )
@@ -211,6 +212,125 @@ func TestDeniedCallerCannotDiscoverCoffeeStationTool(t *testing.T) {
 	}
 	if len(result.Tools) != 0 {
 		t.Fatalf("denied caller discovered %d Tools, want 0", len(result.Tools))
+	}
+}
+
+func TestExternalSubjectDiscoversOnlyAvailabilityTool(t *testing.T) {
+	t.Parallel()
+
+	session := connectGateway(t, gateway.Dependencies{
+		Identity: fixedIdentity{
+			Subject:          "external-alice-subject-id",
+			Actor:            "telegram-agent",
+			TurnCapabilities: []gateway.Capability{"calendar.free_busy.read"},
+		},
+		Channel:       "telegram",
+		Policy:        availabilityOnlyPolicy{},
+		CoffeeStation: readyCoffeeStation{},
+		Calendar:      availableCalendar{},
+	})
+
+	result, err := session.ListTools(t.Context(), nil)
+	if err != nil {
+		t.Fatalf("list MCP Tools: %v", err)
+	}
+	if len(result.Tools) != 1 || result.Tools[0].Name != "calendar.find_availability" {
+		t.Fatalf("discovered Tools = %#v, want only calendar.find_availability", result.Tools)
+	}
+}
+
+func TestExternalSubjectReceivesOnlyAvailableIntervals(t *testing.T) {
+	t.Parallel()
+
+	session := connectGateway(t, gateway.Dependencies{
+		Identity: fixedIdentity{
+			Subject:          "external-alice-subject-id",
+			Actor:            "telegram-agent",
+			TurnCapabilities: []gateway.Capability{"calendar.free_busy.read"},
+		},
+		Channel:       "telegram",
+		Policy:        availabilityOnlyPolicy{},
+		CoffeeStation: readyCoffeeStation{},
+		Calendar:      availableCalendar{},
+	})
+
+	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+		Name: "calendar.find_availability",
+		Arguments: map[string]any{
+			"start": "2026-08-03T09:00:00Z",
+			"end":   "2026-08-03T12:00:00Z",
+		},
+	})
+	if err != nil {
+		t.Fatalf("find availability: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("availability Tool returned an error: %v", result.GetError())
+	}
+	view, ok := result.StructuredContent.(map[string]any)
+	if !ok || len(view) != 1 {
+		t.Fatalf("Free/Busy View = %#v, want one available_intervals field", result.StructuredContent)
+	}
+	intervals, ok := view["available_intervals"].([]any)
+	if !ok || len(intervals) != 1 {
+		t.Fatalf("available_intervals = %#v", view["available_intervals"])
+	}
+	interval, ok := intervals[0].(map[string]any)
+	if !ok || len(interval) != 2 || interval["start"] != "2026-08-03T10:00:00Z" || interval["end"] != "2026-08-03T10:30:00Z" {
+		t.Fatalf("available interval = %#v, want only start and end", intervals[0])
+	}
+}
+
+func TestCalendarEventDetailsAreRejectedAtTheMCPBoundary(t *testing.T) {
+	t.Parallel()
+
+	calendar := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/free-busy" {
+			response.Header().Set("Content-Type", "application/json")
+			_, _ = response.Write([]byte(`{
+				"available_intervals":[{"start":"2026-08-03T10:00:00Z","end":"2026-08-03T10:30:00Z"}],
+				"occupied_events":[{"title":"Private appointment","attendees":["owner@example.invalid"]}]
+			}`))
+			return
+		}
+		http.NotFound(response, request)
+	}))
+	t.Cleanup(calendar.Close)
+
+	session := connectGateway(t, gateway.Dependencies{
+		Policy:        availabilityOnlyPolicy{},
+		CoffeeStation: readyCoffeeStation{},
+		Calendar:      calendarclient.New(calendar.URL, "calendar-credential", calendar.Client()),
+	})
+	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+		Name: "calendar.find_availability",
+		Arguments: map[string]any{
+			"start": "2026-08-03T09:00:00Z",
+			"end":   "2026-08-03T12:00:00Z",
+		},
+	})
+	if err == nil && !result.IsError {
+		t.Fatal("calendar event contents crossed the MCP Enforcement Boundary")
+	}
+}
+
+func TestAvailabilityOutsideRequestedWindowIsRejectedAtTheMCPBoundary(t *testing.T) {
+	t.Parallel()
+
+	session := connectGateway(t, gateway.Dependencies{
+		Policy:        availabilityOnlyPolicy{},
+		CoffeeStation: readyCoffeeStation{},
+		Calendar:      outOfBoundsCalendar{},
+	})
+	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+		Name: "calendar.find_availability",
+		Arguments: map[string]any{
+			"start": "2026-08-03T09:00:00Z",
+			"end":   "2026-08-03T12:00:00Z",
+		},
+	})
+	if err == nil && !result.IsError {
+		t.Fatal("out-of-bounds availability crossed the MCP Enforcement Boundary")
 	}
 }
 
@@ -438,3 +558,37 @@ func (policy *capturingPolicy) Decide(_ context.Context, input gateway.PolicyInp
 }
 
 func (*capturingPolicy) Health(context.Context) error { return nil }
+
+type availabilityOnlyPolicy struct{}
+
+func (availabilityOnlyPolicy) Decide(_ context.Context, input gateway.PolicyInput) (gateway.PolicyDecision, error) {
+	return gateway.PolicyDecision{
+		Allow:          input.Tool == "calendar.find_availability",
+		DecisionID:     "decision-availability",
+		PolicyRevision: "ticket-03",
+	}, nil
+}
+
+func (availabilityOnlyPolicy) Health(context.Context) error { return nil }
+
+type availableCalendar struct{}
+
+func (availableCalendar) FindAvailability(context.Context, gateway.AvailabilityQuery) (gateway.FreeBusyView, error) {
+	return gateway.FreeBusyView{AvailableIntervals: []gateway.AvailableInterval{{
+		Start: "2026-08-03T10:00:00Z",
+		End:   "2026-08-03T10:30:00Z",
+	}}}, nil
+}
+
+func (availableCalendar) Health(context.Context) error { return nil }
+
+type outOfBoundsCalendar struct{}
+
+func (outOfBoundsCalendar) FindAvailability(context.Context, gateway.AvailabilityQuery) (gateway.FreeBusyView, error) {
+	return gateway.FreeBusyView{AvailableIntervals: []gateway.AvailableInterval{{
+		Start: "2026-08-03T08:00:00Z",
+		End:   "2026-08-03T10:00:00Z",
+	}}}, nil
+}
+
+func (outOfBoundsCalendar) Health(context.Context) error { return nil }

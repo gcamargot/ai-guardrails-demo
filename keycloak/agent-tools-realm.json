@@ -40,6 +40,41 @@
           }
         }
       ]
+    },
+    {
+      "name": "calendar.free_busy.read",
+      "description": "Turn Capability for the minimized availability Tool",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "authenticated-subject",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-sub-mapper",
+          "consentRequired": false,
+          "config": {
+            "access.token.claim": "true",
+            "lightweight.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "agent-tools-gateway-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "agent-tools-gateway",
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "lightweight.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
     }
   ],
   "clients": [
@@ -61,7 +96,7 @@
       "serviceAccountsEnabled": false,
       "publicClient": false,
       "protocol": "openid-connect",
-      "defaultClientScopes": ["coffee_station.read"]
+      "defaultClientScopes": ["coffee_station.read", "calendar.free_busy.read"]
     },
     {
       "clientId": "coding-agent",
@@ -90,6 +125,22 @@
         {
           "type": "password",
           "value": "owner-demo-password",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "id": "external-alice-subject-id",
+      "username": "external-alice",
+      "firstName": "External",
+      "lastName": "Alice",
+      "email": "external-alice@example.invalid",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "external-demo-password",
           "temporary": false
         }
       ]
