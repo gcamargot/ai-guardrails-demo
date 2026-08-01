@@ -1,5 +1,6 @@
 *
 !.gitignore
+!.dockerignore
 !AGENTS.md
 !CONTEXT.md
 !README.md

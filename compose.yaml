@@ -1,0 +1,69 @@
+services:
+  opa:
+    image: openpolicyagent/opa:1.17.0-static
+    command:
+      - run
+      - --server
+      - --addr=0.0.0.0:8181
+      - --config-file=/config/opa.yaml
+      - /policies/agent_tools.rego
+    volumes:
+      - ./policies/agent_tools.rego:/policies/agent_tools.rego:ro
+      - ./policies/opa-config.yaml:/config/opa.yaml:ro
+    networks:
+      - control
+
+  coffee-station:
+    build: .
+    command: /app/coffee-station
+    networks:
+      - protected
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8081/healthz"]
+      interval: 2s
+      timeout: 1s
+      retries: 15
+
+  gateway:
+    build: .
+    command: /app/gateway
+    environment:
+      COFFEE_STATION_URL: http://coffee-station:8081
+      DEMO_SUBJECT: owner
+      OPA_URL: http://opa:8181
+    depends_on:
+      coffee-station:
+        condition: service_healthy
+      opa:
+        condition: service_started
+    ports:
+      - "8080:8080"
+    networks:
+      - public
+      - control
+      - protected
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/healthz"]
+      interval: 2s
+      timeout: 1s
+      retries: 15
+
+  smoke:
+    build: .
+    command: /app/smoke
+    environment:
+      GATEWAY_MCP_URL: http://gateway:8080/mcp
+    depends_on:
+      gateway:
+        condition: service_healthy
+    networks:
+      - public
+    profiles:
+      - test
+
+networks:
+  public: {}
+  control:
+    internal: true
+  protected:
+    internal: true
