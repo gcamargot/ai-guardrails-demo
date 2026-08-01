@@ -33,14 +33,22 @@ func New(baseURL, token string, httpClient *http.Client) *Client {
 }
 
 func (client *Client) CalendarCredential(ctx context.Context) (string, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, client.baseURL+"/v1/secret/data/calendar", nil)
+	return client.credential(ctx, "calendar")
+}
+
+func (client *Client) OutlookCredential(ctx context.Context) (string, error) {
+	return client.credential(ctx, "outlook")
+}
+
+func (client *Client) credential(ctx context.Context, resource string) (string, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, client.baseURL+"/v1/secret/data/"+resource, nil)
 	if err != nil {
 		return "", fmt.Errorf("create Vault request: %w", err)
 	}
 	request.Header.Set("X-Vault-Token", client.token)
 	response, err := client.httpClient.Do(request)
 	if err != nil {
-		return "", fmt.Errorf("read calendar credential from Vault: %w", err)
+		return "", fmt.Errorf("read %s credential from Vault: %w", resource, err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
@@ -57,7 +65,7 @@ func (client *Client) CalendarCredential(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("decode Vault secret: %w", err)
 	}
 	if document.Data.Data.Credential == "" {
-		return "", errors.New("Vault calendar credential is missing")
+		return "", fmt.Errorf("Vault %s credential is missing", resource)
 	}
 	return document.Data.Data.Credential, nil
 }

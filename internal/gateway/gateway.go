@@ -12,6 +12,7 @@ import (
 	"github.com/nahtao97/agent-tool-guardrails/internal/approvalauthority"
 	"github.com/nahtao97/agent-tool-guardrails/internal/freebusy"
 	"github.com/nahtao97/agent-tool-guardrails/internal/meeting"
+	"github.com/nahtao97/agent-tool-guardrails/internal/outlook"
 )
 
 type Subject string
@@ -29,6 +30,8 @@ const (
 	reviewMeetingTool       ToolName        = "calendar.review_meeting_proposal"
 	approveMeetingTool      ToolName        = "calendar.approve_meeting_proposal"
 	denyMeetingTool         ToolName        = "calendar.deny_meeting_proposal"
+	searchOutlookTool       ToolName        = "outlook.search_messages"
+	readOutlookTool         ToolName        = "outlook.read_message"
 	discoverOperation       PolicyOperation = "discover"
 	executeOperation        PolicyOperation = "execute"
 )
@@ -102,6 +105,12 @@ type CalendarEvents interface {
 	CreateEvent(context.Context, meeting.EventArguments) (meeting.Event, error)
 }
 
+type Outlook interface {
+	SearchMessages(context.Context, outlook.SearchQuery) ([]outlook.SearchResult, error)
+	ReadMessage(context.Context, outlook.MessageID) (outlook.MessageView, error)
+	Health(context.Context) error
+}
+
 type ApprovalConsumer interface {
 	Consume(context.Context, string, approvalauthority.Binding) error
 	Health(context.Context) error
@@ -116,6 +125,7 @@ type Dependencies struct {
 	Proposals      ProposalStore
 	Approvals      ApprovalConsumer
 	CalendarEvents CalendarEvents
+	Outlook        Outlook
 }
 
 type coffeeStationStatusInput struct {
@@ -141,6 +151,19 @@ type proposalReferenceInput struct {
 type approveMeetingInput struct {
 	ProposalID meeting.ProposalID    `json:"proposal_id"`
 	Approval   meeting.ApprovalToken `json:"approval" jsonschema:"short-lived exact Approval from the Approval Authority"`
+}
+
+type searchOutlookInput struct {
+	Query string `json:"query" jsonschema:"exact mailbox search requested by the Owner"`
+	Limit int    `json:"limit" jsonschema:"maximum number of minimized matches"`
+}
+
+type readOutlookInput struct {
+	MessageID outlook.MessageID `json:"message_id" jsonschema:"exact demo message identifier"`
+}
+
+type searchOutlookOutput struct {
+	Messages []outlook.SearchResult `json:"messages"`
 }
 
 func NewHandler(deps Dependencies) http.Handler {
@@ -430,7 +453,102 @@ func newMCPServer(deps Dependencies, securityContext SecurityContext) *mcp.Serve
 		return result, denial, nil
 	})
 
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        string(searchOutlookTool),
+		Description: "Search the isolated demo mailbox and return minimized message metadata.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input searchOutlookInput) (*mcp.CallToolResult, searchOutlookOutput, error) {
+		if input.Query != strings.TrimSpace(input.Query) || input.Query == "" || len(input.Query) > 100 || input.Limit < 1 || input.Limit > 5 {
+			result := &mcp.CallToolResult{}
+			result.SetError(errors.New("invalid Outlook search query"))
+			return result, searchOutlookOutput{}, nil
+		}
+		result, allowed, err := authorize(ctx, deps.Policy, securityContext, searchOutlookTool, input)
+		if err != nil {
+			return nil, searchOutlookOutput{}, err
+		}
+		if !allowed {
+			return result, searchOutlookOutput{}, nil
+		}
+		if deps.Outlook == nil {
+			return nil, searchOutlookOutput{}, errors.New("Outlook is unavailable")
+		}
+		messages, err := deps.Outlook.SearchMessages(ctx, outlook.SearchQuery{Query: input.Query, Limit: input.Limit})
+		if err != nil {
+			return nil, searchOutlookOutput{}, err
+		}
+		if len(messages) > input.Limit || !validOutlookSearchResults(messages) {
+			result.SetError(errors.New("Outlook returned invalid minimized search results"))
+			return result, searchOutlookOutput{}, nil
+		}
+		return result, searchOutlookOutput{Messages: messages}, nil
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        string(readOutlookTool),
+		Description: "Read one exact demo message as minimized Untrusted Content.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input readOutlookInput) (*mcp.CallToolResult, outlook.MessageView, error) {
+		if !validOutlookMessageID(input.MessageID) {
+			result := &mcp.CallToolResult{}
+			result.SetError(errors.New("invalid Outlook message identifier"))
+			return result, outlook.MessageView{}, nil
+		}
+		result, allowed, err := authorize(ctx, deps.Policy, securityContext, readOutlookTool, input)
+		if err != nil {
+			return nil, outlook.MessageView{}, err
+		}
+		if !allowed {
+			return result, outlook.MessageView{}, nil
+		}
+		if deps.Outlook == nil {
+			return nil, outlook.MessageView{}, errors.New("Outlook is unavailable")
+		}
+		view, err := deps.Outlook.ReadMessage(ctx, input.MessageID)
+		if err != nil {
+			return nil, outlook.MessageView{}, err
+		}
+		if view.MessageID != input.MessageID || strings.TrimSpace(view.Sender) == "" || strings.TrimSpace(view.Subject) == "" ||
+			strings.TrimSpace(view.UntrustedContent) == "" || len(view.UntrustedContent) > 500 {
+			result.SetError(errors.New("Outlook returned an invalid minimized Message View"))
+			return result, outlook.MessageView{}, nil
+		}
+		if _, err := time.Parse(time.RFC3339, view.ReceivedAt); err != nil {
+			result.SetError(errors.New("Outlook returned an invalid minimized Message View"))
+			return result, outlook.MessageView{}, nil
+		}
+		return result, view, nil
+	})
+
 	return server
+}
+
+func validOutlookMessageID(messageID outlook.MessageID) bool {
+	if len(messageID) == 0 || len(messageID) > 80 {
+		return false
+	}
+	for _, character := range messageID {
+		if (character < 'a' || character > 'z') && (character < 'A' || character > 'Z') &&
+			(character < '0' || character > '9') && character != '-' && character != '_' {
+			return false
+		}
+	}
+	return true
+}
+
+func validOutlookSearchResults(messages []outlook.SearchResult) bool {
+	seen := make(map[outlook.MessageID]struct{}, len(messages))
+	for _, message := range messages {
+		if !validOutlookMessageID(message.MessageID) || strings.TrimSpace(message.Sender) == "" || strings.TrimSpace(message.Subject) == "" {
+			return false
+		}
+		if _, err := time.Parse(time.RFC3339, message.ReceivedAt); err != nil {
+			return false
+		}
+		if _, duplicate := seen[message.MessageID]; duplicate {
+			return false
+		}
+		seen[message.MessageID] = struct{}{}
+	}
+	return true
 }
 
 func policyResult(decision PolicyDecision) *mcp.CallToolResult {
@@ -489,6 +607,15 @@ func healthHandler(deps Dependencies) http.HandlerFunc {
 					"status":   "unavailable",
 					"policy":   "ready",
 					"resource": "unavailable",
+				})
+				return
+			}
+		}
+		if deps.Outlook != nil {
+			if err := deps.Outlook.Health(request.Context()); err != nil {
+				response.WriteHeader(http.StatusServiceUnavailable)
+				_ = json.NewEncoder(response).Encode(map[string]string{
+					"status": "unavailable", "policy": "ready", "resource": "unavailable",
 				})
 				return
 			}

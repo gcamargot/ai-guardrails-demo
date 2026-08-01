@@ -4,11 +4,15 @@
 
 **Blocked by:** 04 — Let an External Subject submit a Meeting Proposal for exact Owner Approval.
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
-- [ ] Only the Owner using the Telegram Actor can discover and call Outlook read Tools.
-- [ ] A button or deterministic command grants a short-lived, read-only Turn Capability for the interaction.
-- [ ] Search and read operations are scoped to the requested query or message rather than unrestricted mailbox access.
-- [ ] A prepared email containing prompt injection can be summarized but cannot invoke a calendar, meeting or smart-home Tool.
-- [ ] A new explicit user interaction is required before any later Effect can be authorized.
-- [ ] Email bodies, secrets and full prompts do not appear in decision or application logs.
+- [x] Only the Owner using the Telegram Actor can discover and call Outlook read Tools.
+- [x] A button or deterministic command grants a short-lived, read-only Turn Capability for the interaction.
+- [x] Search and read operations are scoped to the requested query or message rather than unrestricted mailbox access.
+- [x] A prepared email containing prompt injection can be summarized but cannot invoke a calendar, meeting or smart-home Tool.
+- [x] A new explicit user interaction is required before any later Effect can be authorized.
+- [x] Email bodies, secrets and full prompts do not appear in decision or application logs.
+
+## Comments
+
+- Implemented deterministic Owner-only Telegram commands, optional per-interaction OIDC scope, two narrow MCP Tools, OPA enforcement, a GET-only isolated Outlook fixture, response minimization and smoke assertions for zero additional Effects and log hygiene.

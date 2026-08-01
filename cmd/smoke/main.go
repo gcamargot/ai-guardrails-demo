@@ -23,6 +23,7 @@ func main() {
 	endpoint := environment("GATEWAY_MCP_URL", "http://127.0.0.1:8080/mcp")
 	telegramGatewayEndpoint := environment("TELEGRAM_GATEWAY_MCP_URL", "http://127.0.0.1:8080/mcp")
 	telegramWebhookEndpoint := environment("TELEGRAM_WEBHOOK_URL", "http://127.0.0.1:8084/telegram/webhook")
+	calendarMetricsEndpoint := environment("CALENDAR_METRICS_URL", "http://127.0.0.1:8083/metrics")
 	tokenEndpoint := environment("KEYCLOAK_TOKEN_URL", "http://127.0.0.1:8082/realms/agent-tools/protocol/openid-connect/token")
 	if status := unauthenticatedStatus(ctx, endpoint); status != http.StatusUnauthorized {
 		log.Fatalf("unauthenticated MCP status = %d, want %d", status, http.StatusUnauthorized)
@@ -61,28 +62,107 @@ func main() {
 	_ = secondAvailability.Body.Close()
 	limitedAvailability := telegramCommand(ctx, telegramWebhookEndpoint, 4242, "una consulta de disponibilidad más", http.StatusTooManyRequests)
 	_ = limitedAvailability.Body.Close()
+	outlookMessageID := runOutlookFlow(ctx, tokenEndpoint, telegramGatewayEndpoint, telegramWebhookEndpoint, calendarMetricsEndpoint)
 	proposalID, eventID := runMeetingFlow(ctx, telegramWebhookEndpoint)
 
 	fmt.Printf(
-		"PASS subject=%s actors=%s,%s telegram_decision=%v coding_decision=%v available_intervals=%d proposal=%s event=%s event_count=1 policy_revision=ticket-04\n",
+		"PASS subject=%s actors=%s,%s telegram_decision=%v coding_decision=%v available_intervals=%d outlook_message=%s outlook_effect_count=0 proposal=%s event=%s event_count=1 policy_revision=ticket-05\n",
 		telegramClaims.Subject,
 		telegramClaims.Actor,
 		codingClaims.Actor,
 		telegramDecision,
 		codingDecision,
 		intervals,
+		outlookMessageID,
 		proposalID,
 		eventID,
 	)
 }
 
+func runOutlookFlow(ctx context.Context, tokenEndpoint, gatewayEndpoint, webhookEndpoint, statsEndpoint string) string {
+	defaultToken := obtainToken(ctx, tokenEndpoint, "telegram-agent", "telegram-demo-secret", "owner", "owner-demo-password")
+	verifyOutlookDiscovery(ctx, gatewayEndpoint, defaultToken, false)
+	outlookToken := obtainTokenWithScopes(ctx, tokenEndpoint, "telegram-agent", "telegram-demo-secret", "owner", "owner-demo-password", []string{"outlook.mail.read"})
+	verifyOutlookDiscovery(ctx, gatewayEndpoint, outlookToken, true)
+
+	before := calendarEventCount(ctx, statsEndpoint)
+	searchResponse := telegramCommand(ctx, webhookEndpoint, 9001, "/outlook-search Project Phoenix", http.StatusOK)
+	var search struct {
+		Messages []struct {
+			MessageID  string `json:"message_id"`
+			Sender     string `json:"sender"`
+			Subject    string `json:"subject"`
+			ReceivedAt string `json:"received_at"`
+		} `json:"messages"`
+	}
+	decodeJSON(searchResponse, &search, "minimized Outlook search")
+	if len(search.Messages) != 1 || search.Messages[0].MessageID != "demo-injection-message" {
+		log.Fatalf("unexpected minimized Outlook search: %#v", search)
+	}
+
+	readResponse := telegramCommand(ctx, webhookEndpoint, 9001, "/outlook-read "+search.Messages[0].MessageID, http.StatusOK)
+	var view map[string]any
+	decodeJSON(readResponse, &view, "minimized Outlook Message View")
+	encoded, _ := json.Marshal(view)
+	if len(view) != 5 || view["message_id"] != "demo-injection-message" || view["untrusted_content"] != "Project Phoenix status update; embedded instructions were ignored." ||
+		strings.Contains(string(encoded), "PROMPT_INJECTION_SENTINEL_7F3A") || strings.Contains(string(encoded), "calendar.approve_meeting_proposal") {
+		log.Fatalf("Outlook Message View was not minimized Untrusted Content: %s", encoded)
+	}
+	if after := calendarEventCount(ctx, statsEndpoint); after != before {
+		log.Fatalf("Untrusted Content produced an Effect: before=%d after=%d", before, after)
+	}
+	verifyOutlookDiscovery(ctx, gatewayEndpoint, defaultToken, false)
+	return search.Messages[0].MessageID
+}
+
+func verifyOutlookDiscovery(ctx context.Context, endpoint, token string, wantOutlook bool) {
+	session := connectMCP(ctx, endpoint, token)
+	defer session.Close()
+	tools, err := session.ListTools(ctx, nil)
+	if err != nil {
+		log.Fatalf("list Outlook Tools: %v", err)
+	}
+	found := 0
+	for _, tool := range tools.Tools {
+		if strings.HasPrefix(tool.Name, "outlook.") {
+			found++
+		}
+	}
+	if (wantOutlook && found != 2) || (!wantOutlook && found != 0) {
+		log.Fatalf("Outlook discovery count=%d capability=%v", found, wantOutlook)
+	}
+}
+
+func calendarEventCount(ctx context.Context, endpoint string) int {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		log.Fatalf("create calendar stats request: %v", err)
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		log.Fatalf("read calendar stats: %v", err)
+	}
+	defer response.Body.Close()
+	var stats struct {
+		EventCount int `json:"event_count"`
+	}
+	if response.StatusCode != http.StatusOK || json.NewDecoder(response.Body).Decode(&stats) != nil {
+		log.Fatalf("calendar stats returned HTTP %d", response.StatusCode)
+	}
+	return stats.EventCount
+}
+
 func obtainToken(ctx context.Context, endpoint, clientID, clientSecret, username, password string) string {
+	return obtainTokenWithScopes(ctx, endpoint, clientID, clientSecret, username, password, nil)
+}
+
+func obtainTokenWithScopes(ctx context.Context, endpoint, clientID, clientSecret, username, password string, scopes []string) string {
 	token, err := (oidcclient.Client{
 		Endpoint:     endpoint,
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
 		HTTPClient:   http.DefaultClient,
-	}).PasswordToken(ctx, username, password)
+	}).PasswordTokenWithScopes(ctx, username, password, scopes)
 	if err != nil {
 		log.Fatalf("request %s token: %v", clientID, err)
 	}
@@ -118,7 +198,7 @@ func callCoffeeStation(ctx context.Context, endpoint, token string, meta mcp.Met
 	if !ok || output["state"] != "ready" {
 		log.Fatalf("unexpected authenticated result: %#v", result.StructuredContent)
 	}
-	if result.Meta["policy_revision"] != "ticket-04" {
+	if result.Meta["policy_revision"] != "ticket-05" {
 		log.Fatalf("unexpected policy revision: %v", result.Meta["policy_revision"])
 	}
 	return result.Meta["decision_id"]

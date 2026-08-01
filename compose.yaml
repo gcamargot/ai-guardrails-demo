@@ -60,9 +60,12 @@ services:
       - -ec
       - |
         vault policy write calendar-reader /config/calendar-reader.hcl >/dev/null
+        vault policy write outlook-reader /config/outlook-reader.hcl >/dev/null
         vault kv put secret/calendar credential=demo-calendar-credential >/dev/null
-        vault token create -field=token -policy=calendar-reader -no-default-policy > /tokens/gateway
+        vault kv put secret/outlook credential=demo-outlook-credential >/dev/null
+        vault token create -field=token -policy=calendar-reader -policy=outlook-reader -no-default-policy > /tokens/gateway
         vault token create -field=token -policy=calendar-reader -no-default-policy > /tokens/calendar
+        vault token create -field=token -policy=outlook-reader -no-default-policy > /tokens/outlook
     depends_on:
       vault:
         condition: service_healthy
@@ -92,10 +95,31 @@ services:
     networks:
       - protected
       - secrets
+      - observability
     volumes:
       - vault-tokens:/run/vault-token:ro
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8083/healthz"]
+      interval: 2s
+      timeout: 1s
+      retries: 15
+
+  outlook:
+    build: .
+    command: /app/outlook
+    environment:
+      VAULT_TOKEN_FILE: /run/vault-token/outlook
+      VAULT_URL: http://vault:8200
+    depends_on:
+      vault-init:
+        condition: service_completed_successfully
+    networks:
+      - protected
+      - secrets
+    volumes:
+      - vault-tokens:/run/vault-token:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8087/healthz"]
       interval: 2s
       timeout: 1s
       retries: 15
@@ -143,6 +167,7 @@ services:
       OIDC_AUDIENCE: agent-tools-gateway
       OIDC_ISSUER: http://keycloak:8080/realms/agent-tools
       OIDC_REQUIRED_SCOPES: coffee_station.read
+      OUTLOOK_URL: http://outlook:8087
       VAULT_TOKEN_FILE: /run/vault-token/gateway
       VAULT_URL: http://vault:8200
     depends_on:
@@ -156,6 +181,8 @@ services:
         condition: service_healthy
       opa:
         condition: service_started
+      outlook:
+        condition: service_healthy
       vault-init:
         condition: service_completed_successfully
     ports:
@@ -187,8 +214,9 @@ services:
       OPA_URL: http://opa:8181
       OIDC_AUDIENCE: agent-tools-gateway
       OIDC_ISSUER: http://keycloak:8080/realms/agent-tools
-      OIDC_OPTIONAL_SCOPES: calendar.meeting.approve
+      OIDC_OPTIONAL_SCOPES: calendar.meeting.approve,outlook.mail.read
       OIDC_REQUIRED_SCOPES: calendar.free_busy.read,calendar.meeting.propose
+      OUTLOOK_URL: http://outlook:8087
       VAULT_TOKEN_FILE: /run/vault-token/gateway
       VAULT_URL: http://vault:8200
     depends_on:
@@ -202,6 +230,8 @@ services:
         condition: service_healthy
       opa:
         condition: service_started
+      outlook:
+        condition: service_healthy
       vault-init:
         condition: service_completed_successfully
     networks:
@@ -273,6 +303,7 @@ services:
     build: .
     command: /app/smoke
     environment:
+      CALENDAR_METRICS_URL: http://calendar:8083/metrics
       GATEWAY_MCP_URL: http://gateway:8080/mcp
       KEYCLOAK_TOKEN_URL: http://keycloak:8080/realms/agent-tools/protocol/openid-connect/token
       TELEGRAM_GATEWAY_MCP_URL: http://telegram-gateway:8080/mcp
@@ -285,6 +316,7 @@ services:
     networks:
       - public
       - identity
+      - observability
     profiles:
       - test
 
@@ -301,6 +333,8 @@ networks:
   model:
     internal: true
   approval:
+    internal: true
+  observability:
     internal: true
 
 volumes:

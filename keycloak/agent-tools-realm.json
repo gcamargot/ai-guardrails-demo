@@ -119,6 +119,41 @@
           }
         }
       ]
+    },
+    {
+      "name": "outlook.mail.read",
+      "description": "Short-lived Turn Capability for minimized Outlook read Tools",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "authenticated-subject",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-sub-mapper",
+          "consentRequired": false,
+          "config": {
+            "access.token.claim": "true",
+            "lightweight.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "agent-tools-gateway-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "agent-tools-gateway",
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "lightweight.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
     }
   ],
   "clients": [
@@ -141,7 +176,7 @@
       "publicClient": false,
       "protocol": "openid-connect",
       "defaultClientScopes": ["coffee_station.read", "calendar.free_busy.read", "calendar.meeting.propose"],
-      "optionalClientScopes": ["calendar.meeting.approve"]
+      "optionalClientScopes": ["calendar.meeting.approve", "outlook.mail.read"]
     },
     {
       "clientId": "coding-agent",

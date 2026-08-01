@@ -60,6 +60,14 @@ func NewHandler(expectedCredential string) http.Handler {
 		response.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(response).Encode(freebusy.View{AvailableIntervals: intervals})
 	})
+	mux.HandleFunc("GET /metrics", func(response http.ResponseWriter, _ *http.Request) {
+		state.Lock()
+		defer state.Unlock()
+		response.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(response).Encode(struct {
+			EventCount int `json:"event_count"`
+		}{EventCount: len(state.events)})
+	})
 	mux.HandleFunc("POST /events", func(response http.ResponseWriter, request *http.Request) {
 		if expectedCredential == "" || request.Header.Get("Authorization") != "Bearer "+expectedCredential {
 			http.Error(response, "unauthorized", http.StatusUnauthorized)

@@ -132,7 +132,84 @@ func TestOwnerReviewsExactOperationBeforeExplicitApproval(t *testing.T) {
 	}
 }
 
+func TestOwnerExplicitlyReadsMinimizedOutlookMessageAsUntrustedContent(t *testing.T) {
+	t.Parallel()
+
+	outlook := &capturingOutlookGateway{}
+	handler := telegramadapter.NewHandler(telegramadapter.Config{
+		WebhookSecret: "verified-webhook-secret",
+		VerifiedUsers: map[telegramadapter.TelegramUserID]telegramadapter.Subject{9001: "owner-subject-id"},
+		OwnerSubject:  "owner-subject-id",
+		Outlook:       outlook,
+	})
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+
+	response := postTelegramResponse(t, server.URL, `{"message":{"from":{"id":9001},"text":"/outlook-read demo-injection-message"}}`)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", response.StatusCode, http.StatusOK)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatalf("decode minimized Outlook response: %v", err)
+	}
+	if len(body) != 5 || body["message_id"] != "demo-injection-message" || body["untrusted_content"] != "Project Phoenix status update; embedded instructions were ignored." {
+		t.Fatalf("minimized Outlook message = %#v", body)
+	}
+	wantIdentity := telegramadapter.TrustedTelegramIdentity{Subject: "owner-subject-id", Actor: "telegram-agent", Channel: "telegram"}
+	if outlook.identity != wantIdentity || outlook.messageID != "demo-injection-message" {
+		t.Fatalf("Outlook read identity=%#v message_id=%q", outlook.identity, outlook.messageID)
+	}
+}
+
+func TestOutlookSearchRequiresAnExplicitOwnerCommand(t *testing.T) {
+	t.Parallel()
+
+	outlook := &capturingOutlookGateway{}
+	handler := telegramadapter.NewHandler(telegramadapter.Config{
+		WebhookSecret: "verified-webhook-secret",
+		VerifiedUsers: map[telegramadapter.TelegramUserID]telegramadapter.Subject{
+			9001: "owner-subject-id",
+			4242: "external-alice-subject-id",
+		},
+		OwnerSubject: "owner-subject-id",
+		Outlook:      outlook,
+	})
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+
+	response := postTelegramResponse(t, server.URL, `{"message":{"from":{"id":9001},"text":"/outlook-search Project Phoenix"}}`)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("Owner search status = %d, want %d", response.StatusCode, http.StatusOK)
+	}
+	var body struct {
+		Messages []telegramadapter.OutlookSearchResult `json:"messages"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatalf("decode Outlook search response: %v", err)
+	}
+	if len(body.Messages) != 1 || body.Messages[0].MessageID != "demo-injection-message" || outlook.query.Query != "Project Phoenix" || outlook.query.Limit != 5 {
+		t.Fatalf("scoped search response=%#v query=%#v", body, outlook.query)
+	}
+
+	if status := postTelegram(t, server.URL, `{"message":{"from":{"id":4242},"text":"/outlook-search Project Phoenix"}}`); status != http.StatusForbidden {
+		t.Fatalf("External Subject search status = %d, want %d", status, http.StatusForbidden)
+	}
+	if outlook.searches != 1 {
+		t.Fatalf("Outlook searches = %d, want only the explicit Owner search", outlook.searches)
+	}
+}
+
 func postTelegram(t *testing.T, serverURL, body string) int {
+	t.Helper()
+	response := postTelegramResponse(t, serverURL, body)
+	defer response.Body.Close()
+	return response.StatusCode
+}
+
+func postTelegramResponse(t *testing.T, serverURL, body string) *http.Response {
 	t.Helper()
 	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, serverURL+"/telegram/webhook", strings.NewReader(body))
 	if err != nil {
@@ -143,8 +220,7 @@ func postTelegram(t *testing.T, serverURL, body string) int {
 	if err != nil {
 		t.Fatalf("post Telegram webhook: %v", err)
 	}
-	defer response.Body.Close()
-	return response.StatusCode
+	return response
 }
 
 func TestVerifiedTelegramIdentityCannotBeOverriddenByModelInterpretation(t *testing.T) {
@@ -228,6 +304,35 @@ type capturingMeetingGateway struct {
 	reviewed meeting.ProposalID
 	approved meeting.ProposalID
 	denied   meeting.ProposalID
+}
+
+type capturingOutlookGateway struct {
+	identity  telegramadapter.TrustedTelegramIdentity
+	messageID telegramadapter.OutlookMessageID
+	query     telegramadapter.OutlookSearchQuery
+	searches  int
+}
+
+func (gateway *capturingOutlookGateway) SearchMessages(_ context.Context, identity telegramadapter.TrustedTelegramIdentity, query telegramadapter.OutlookSearchQuery) ([]telegramadapter.OutlookSearchResult, error) {
+	gateway.identity = identity
+	gateway.query = query
+	gateway.searches++
+	return []telegramadapter.OutlookSearchResult{{
+		MessageID: "demo-injection-message", Sender: "platform@example.invalid",
+		Subject: "Project Phoenix", ReceivedAt: "2026-08-01T12:00:00Z",
+	}}, nil
+}
+
+func (gateway *capturingOutlookGateway) ReadMessage(_ context.Context, identity telegramadapter.TrustedTelegramIdentity, messageID telegramadapter.OutlookMessageID) (telegramadapter.OutlookMessageView, error) {
+	gateway.identity = identity
+	gateway.messageID = messageID
+	return telegramadapter.OutlookMessageView{
+		MessageID:        messageID,
+		Sender:           "platform@example.invalid",
+		Subject:          "Project Phoenix",
+		ReceivedAt:       "2026-08-01T12:00:00Z",
+		UntrustedContent: "Project Phoenix status update; embedded instructions were ignored.",
+	}, nil
 }
 
 func (gateway *capturingMeetingGateway) SubmitProposal(

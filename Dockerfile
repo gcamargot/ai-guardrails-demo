@@ -13,6 +13,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/calendar ./cmd/cal
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/telegram-adapter ./cmd/telegram-adapter
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/qwen-simulator ./cmd/qwen-simulator
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/approval-authority ./cmd/approval-authority
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/outlook ./cmd/outlook
 
 FROM alpine:3.22
 RUN addgroup -g 10001 -S app && adduser -u 10001 -S -G app app

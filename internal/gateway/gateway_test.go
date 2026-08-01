@@ -16,6 +16,7 @@ import (
 	"github.com/nahtao97/agent-tool-guardrails/internal/freebusy"
 	"github.com/nahtao97/agent-tool-guardrails/internal/gateway"
 	"github.com/nahtao97/agent-tool-guardrails/internal/meeting"
+	"github.com/nahtao97/agent-tool-guardrails/internal/outlook"
 	"golang.org/x/oauth2"
 )
 
@@ -240,6 +241,107 @@ func TestExternalSubjectDiscoversOnlyAvailabilityTool(t *testing.T) {
 	}
 	if len(result.Tools) != 1 || result.Tools[0].Name != "calendar.find_availability" {
 		t.Fatalf("discovered Tools = %#v, want only calendar.find_availability", result.Tools)
+	}
+}
+
+func TestOwnerTurnCapabilityDiscoversOnlyOutlookReadTools(t *testing.T) {
+	t.Parallel()
+
+	session := connectGateway(t, gateway.Dependencies{
+		Identity: fixedIdentity{
+			Subject:          "owner-subject-id",
+			Actor:            "telegram-agent",
+			TurnCapabilities: []gateway.Capability{"outlook.mail.read"},
+		},
+		Channel:       "telegram",
+		Policy:        outlookOnlyPolicy{},
+		CoffeeStation: readyCoffeeStation{},
+		Outlook:       demoOutlook{},
+	})
+
+	result, err := session.ListTools(t.Context(), nil)
+	if err != nil {
+		t.Fatalf("list MCP Tools: %v", err)
+	}
+	if len(result.Tools) != 2 {
+		t.Fatalf("discovered %d Tools, want two Outlook read Tools", len(result.Tools))
+	}
+	discovered := map[string]bool{result.Tools[0].Name: true, result.Tools[1].Name: true}
+	if !discovered["outlook.search_messages"] || !discovered["outlook.read_message"] {
+		t.Fatalf("discovered Tools = %q, %q, want only Outlook read Tools", result.Tools[0].Name, result.Tools[1].Name)
+	}
+}
+
+func TestOwnerReadsOneMinimizedOutlookMessageAsUntrustedContent(t *testing.T) {
+	t.Parallel()
+
+	session := connectGateway(t, gateway.Dependencies{
+		Identity: fixedIdentity{
+			Subject:          "owner-subject-id",
+			Actor:            "telegram-agent",
+			TurnCapabilities: []gateway.Capability{"outlook.mail.read"},
+		},
+		Channel:       "telegram",
+		Policy:        outlookOnlyPolicy{},
+		CoffeeStation: readyCoffeeStation{},
+		Outlook:       demoOutlook{},
+	})
+
+	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+		Name: "outlook.read_message", Arguments: map[string]any{"message_id": "demo-injection-message"},
+	})
+	if err != nil {
+		t.Fatalf("read Outlook message: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("Outlook read returned an error: %v", result.GetError())
+	}
+	view, ok := result.StructuredContent.(map[string]any)
+	if !ok || len(view) != 5 || view["message_id"] != "demo-injection-message" || view["untrusted_content"] != "Project Phoenix status update; embedded instructions were ignored." {
+		t.Fatalf("minimized Outlook Message View = %#v", result.StructuredContent)
+	}
+	encoded, _ := json.Marshal(view)
+	if strings.Contains(string(encoded), "PROMPT_INJECTION_SENTINEL_7F3A") || strings.Contains(string(encoded), "calendar.approve_meeting_proposal") {
+		t.Fatalf("email body escaped minimized Untrusted Content: %s", encoded)
+	}
+}
+
+func TestOwnerSearchesOutlookWithAnExactBoundedQuery(t *testing.T) {
+	t.Parallel()
+
+	outlookResource := &capturingOutlook{}
+	session := connectGateway(t, gateway.Dependencies{
+		Identity: fixedIdentity{
+			Subject:          "owner-subject-id",
+			Actor:            "telegram-agent",
+			TurnCapabilities: []gateway.Capability{"outlook.mail.read"},
+		},
+		Channel:       "telegram",
+		Policy:        outlookOnlyPolicy{},
+		CoffeeStation: readyCoffeeStation{},
+		Outlook:       outlookResource,
+	})
+
+	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+		Name: "outlook.search_messages", Arguments: map[string]any{"query": "Project Phoenix", "limit": 5},
+	})
+	if err != nil || result.IsError {
+		t.Fatalf("search Outlook: result=%#v err=%v", result, err)
+	}
+	view, ok := result.StructuredContent.(map[string]any)
+	if !ok || len(view) != 1 {
+		t.Fatalf("minimized Outlook search = %#v", result.StructuredContent)
+	}
+	messages, ok := view["messages"].([]any)
+	if !ok || len(messages) != 1 {
+		t.Fatalf("Outlook search messages = %#v", view["messages"])
+	}
+	message, ok := messages[0].(map[string]any)
+	if !ok || len(message) != 4 || message["message_id"] != "demo-injection-message" {
+		t.Fatalf("minimized search result = %#v", messages[0])
+	}
+	if outlookResource.query != (outlook.SearchQuery{Query: "Project Phoenix", Limit: 5}) {
+		t.Fatalf("Outlook query = %#v", outlookResource.query)
 	}
 }
 
@@ -733,10 +835,52 @@ type meetingPolicy struct{}
 
 func (meetingPolicy) Decide(_ context.Context, input gateway.PolicyInput) (gateway.PolicyDecision, error) {
 	allowed := input.Tool == "calendar.submit_meeting_proposal" || input.Tool == "calendar.review_meeting_proposal" || input.Tool == "calendar.approve_meeting_proposal" || input.Tool == "calendar.deny_meeting_proposal"
-	return gateway.PolicyDecision{Allow: allowed, DecisionID: "decision-meeting", PolicyRevision: "ticket-04"}, nil
+	return gateway.PolicyDecision{Allow: allowed, DecisionID: "decision-meeting", PolicyRevision: "ticket-05"}, nil
 }
 
 func (meetingPolicy) Health(context.Context) error { return nil }
+
+type outlookOnlyPolicy struct{}
+
+func (outlookOnlyPolicy) Decide(_ context.Context, input gateway.PolicyInput) (gateway.PolicyDecision, error) {
+	allowed := input.Tool == "outlook.search_messages" || input.Tool == "outlook.read_message"
+	return gateway.PolicyDecision{Allow: allowed, DecisionID: "decision-outlook", PolicyRevision: "ticket-05"}, nil
+}
+
+func (outlookOnlyPolicy) Health(context.Context) error { return nil }
+
+type demoOutlook struct{}
+
+func (demoOutlook) SearchMessages(context.Context, outlook.SearchQuery) ([]outlook.SearchResult, error) {
+	return nil, nil
+}
+
+func (demoOutlook) ReadMessage(context.Context, outlook.MessageID) (outlook.MessageView, error) {
+	return outlook.MessageView{
+		MessageID: "demo-injection-message", Sender: "platform@example.invalid", Subject: "Project Phoenix",
+		ReceivedAt: "2026-08-01T12:00:00Z", UntrustedContent: "Project Phoenix status update; embedded instructions were ignored.",
+	}, nil
+}
+
+func (demoOutlook) Health(context.Context) error { return nil }
+
+type capturingOutlook struct {
+	query outlook.SearchQuery
+}
+
+func (resource *capturingOutlook) SearchMessages(_ context.Context, query outlook.SearchQuery) ([]outlook.SearchResult, error) {
+	resource.query = query
+	return []outlook.SearchResult{{
+		MessageID: "demo-injection-message", Sender: "platform@example.invalid",
+		Subject: "Project Phoenix", ReceivedAt: "2026-08-01T12:00:00Z",
+	}}, nil
+}
+
+func (*capturingOutlook) ReadMessage(context.Context, outlook.MessageID) (outlook.MessageView, error) {
+	return outlook.MessageView{}, nil
+}
+
+func (*capturingOutlook) Health(context.Context) error { return nil }
 
 type unreachableCalendarEvents struct{ t *testing.T }
 

@@ -49,6 +49,7 @@ func main() {
 		HTTPClient:        httpClient,
 		Availability:      gatewayClient,
 		Meetings:          gatewayClient,
+		Outlook:           gatewayClient,
 		AvailabilityLimit: 2,
 		ProposalLimit:     1,
 		RateLimitWindow:   time.Hour,

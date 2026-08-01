@@ -24,6 +24,17 @@ func TestApprovedRequestRetriesCreateAtMostOneCalendarEvent(t *testing.T) {
 	if first.EventID != "demo-event-1" || !first.Created || second.EventID != first.EventID || second.Created {
 		t.Fatalf("first=%#v second=%#v", first, second)
 	}
+	response, err := http.Get(server.URL + "/metrics")
+	if err != nil {
+		t.Fatalf("read calendar effect count: %v", err)
+	}
+	defer response.Body.Close()
+	var stats struct {
+		EventCount int `json:"event_count"`
+	}
+	if response.StatusCode != http.StatusOK || json.NewDecoder(response.Body).Decode(&stats) != nil || stats.EventCount != 1 {
+		t.Fatalf("calendar stats status=%d body=%#v", response.StatusCode, stats)
+	}
 }
 
 func createEvent(t *testing.T, server *httptest.Server, arguments meeting.EventArguments) meeting.Event {

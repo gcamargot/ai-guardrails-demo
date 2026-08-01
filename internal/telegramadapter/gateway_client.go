@@ -13,6 +13,7 @@ import (
 	"github.com/nahtao97/agent-tool-guardrails/internal/approvalauthority"
 	"github.com/nahtao97/agent-tool-guardrails/internal/meeting"
 	"github.com/nahtao97/agent-tool-guardrails/internal/oidcclient"
+	"github.com/nahtao97/agent-tool-guardrails/internal/outlook"
 	"golang.org/x/oauth2"
 )
 
@@ -173,6 +174,52 @@ func (client *GatewayClient) DenyProposal(ctx context.Context, identity TrustedT
 		return meeting.Denial{}, err
 	}
 	return denial, nil
+}
+
+func (client *GatewayClient) SearchMessages(ctx context.Context, identity TrustedTelegramIdentity, query OutlookSearchQuery) ([]OutlookSearchResult, error) {
+	if identity.Subject != client.config.OwnerSubject {
+		return nil, errors.New("only the Owner can grant an Outlook read Turn Capability")
+	}
+	session, err := client.connectWithScopes(ctx, identity, []string{"outlook.mail.read"})
+	if err != nil {
+		return nil, err
+	}
+	defer session.Close()
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "outlook.search_messages", Arguments: map[string]any{"query": query.Query, "limit": query.Limit},
+	})
+	if err != nil || result.IsError {
+		return nil, toolError("search Outlook", result, err)
+	}
+	var view struct {
+		Messages []outlook.SearchResult `json:"messages"`
+	}
+	if err := decodeStructured(result.StructuredContent, &view); err != nil {
+		return nil, err
+	}
+	return view.Messages, nil
+}
+
+func (client *GatewayClient) ReadMessage(ctx context.Context, identity TrustedTelegramIdentity, messageID OutlookMessageID) (OutlookMessageView, error) {
+	if identity.Subject != client.config.OwnerSubject {
+		return OutlookMessageView{}, errors.New("only the Owner can grant an Outlook read Turn Capability")
+	}
+	session, err := client.connectWithScopes(ctx, identity, []string{"outlook.mail.read"})
+	if err != nil {
+		return OutlookMessageView{}, err
+	}
+	defer session.Close()
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "outlook.read_message", Arguments: map[string]any{"message_id": messageID},
+	})
+	if err != nil || result.IsError {
+		return OutlookMessageView{}, toolError("read Outlook", result, err)
+	}
+	var view outlook.MessageView
+	if err := decodeStructured(result.StructuredContent, &view); err != nil {
+		return OutlookMessageView{}, err
+	}
+	return view, nil
 }
 
 func (client *GatewayClient) connect(ctx context.Context, identity TrustedTelegramIdentity) (*mcp.ClientSession, error) {

@@ -12,6 +12,7 @@ import (
 
 	"github.com/nahtao97/agent-tool-guardrails/internal/freebusy"
 	"github.com/nahtao97/agent-tool-guardrails/internal/meeting"
+	"github.com/nahtao97/agent-tool-guardrails/internal/outlook"
 )
 
 type TelegramUserID int64
@@ -27,6 +28,10 @@ type TrustedTelegramIdentity struct {
 
 type AvailabilityQuery = freebusy.Window
 type AvailableInterval = freebusy.AvailableInterval
+type OutlookMessageID = outlook.MessageID
+type OutlookSearchQuery = outlook.SearchQuery
+type OutlookSearchResult = outlook.SearchResult
+type OutlookMessageView = outlook.MessageView
 
 type AvailabilityGateway interface {
 	FindAvailability(context.Context, TrustedTelegramIdentity, AvailabilityQuery) ([]AvailableInterval, error)
@@ -39,6 +44,11 @@ type MeetingGateway interface {
 	DenyProposal(context.Context, TrustedTelegramIdentity, meeting.ProposalID, meeting.ApprovalToken) (meeting.Denial, error)
 }
 
+type OutlookGateway interface {
+	SearchMessages(context.Context, TrustedTelegramIdentity, OutlookSearchQuery) ([]OutlookSearchResult, error)
+	ReadMessage(context.Context, TrustedTelegramIdentity, OutlookMessageID) (OutlookMessageView, error)
+}
+
 type Config struct {
 	WebhookSecret     string
 	VerifiedUsers     map[TelegramUserID]Subject
@@ -47,6 +57,7 @@ type Config struct {
 	HTTPClient        *http.Client
 	Availability      AvailabilityGateway
 	Meetings          MeetingGateway
+	Outlook           OutlookGateway
 	AvailabilityLimit int
 	ProposalLimit     int
 	RateLimitWindow   time.Duration
@@ -89,6 +100,46 @@ func NewHandler(config Config) http.Handler {
 		}
 
 		identity := TrustedTelegramIdentity{Subject: subject, Actor: "telegram-agent", Channel: "telegram"}
+		if strings.HasPrefix(update.Message.Text, "/outlook-search ") {
+			query := strings.TrimSpace(strings.TrimPrefix(update.Message.Text, "/outlook-search "))
+			if subject != config.OwnerSubject || config.Outlook == nil {
+				http.Error(response, "forbidden", http.StatusForbidden)
+				return
+			}
+			if query == "" || len(query) > 100 {
+				http.Error(response, "invalid Outlook search", http.StatusBadRequest)
+				return
+			}
+			messages, err := config.Outlook.SearchMessages(request.Context(), identity, OutlookSearchQuery{Query: query, Limit: 5})
+			if err != nil {
+				http.Error(response, "Outlook search failed", http.StatusBadGateway)
+				return
+			}
+			response.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(response).Encode(struct {
+				Messages []OutlookSearchResult `json:"messages"`
+			}{Messages: messages})
+			return
+		}
+		if strings.HasPrefix(update.Message.Text, "/outlook-read ") {
+			messageID := OutlookMessageID(strings.TrimSpace(strings.TrimPrefix(update.Message.Text, "/outlook-read ")))
+			if subject != config.OwnerSubject || config.Outlook == nil {
+				http.Error(response, "forbidden", http.StatusForbidden)
+				return
+			}
+			if messageID == "" {
+				http.Error(response, "invalid Outlook message", http.StatusBadRequest)
+				return
+			}
+			message, err := config.Outlook.ReadMessage(request.Context(), identity, messageID)
+			if err != nil {
+				http.Error(response, "Outlook read failed", http.StatusBadGateway)
+				return
+			}
+			response.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(response).Encode(message)
+			return
+		}
 		if strings.HasPrefix(update.Message.Text, "/review ") || strings.HasPrefix(update.Message.Text, "/approve ") || strings.HasPrefix(update.Message.Text, "/deny ") {
 			if subject != config.OwnerSubject || config.Meetings == nil {
 				http.Error(response, "forbidden", http.StatusForbidden)

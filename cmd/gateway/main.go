@@ -16,6 +16,7 @@ import (
 	"github.com/nahtao97/agent-tool-guardrails/internal/meeting"
 	"github.com/nahtao97/agent-tool-guardrails/internal/oidcauth"
 	"github.com/nahtao97/agent-tool-guardrails/internal/opaclient"
+	"github.com/nahtao97/agent-tool-guardrails/internal/outlookclient"
 	"github.com/nahtao97/agent-tool-guardrails/internal/vaultclient"
 )
 
@@ -29,6 +30,10 @@ func main() {
 	calendarCredential, err := vault.CalendarCredential(context.Background())
 	if err != nil {
 		log.Fatalf("initialize calendar credential: %v", err)
+	}
+	outlookCredential, err := vault.OutlookCredential(context.Background())
+	if err != nil {
+		log.Fatalf("initialize Outlook credential: %v", err)
 	}
 	authenticator, err := oidcauth.New(context.Background(), oidcauth.Config{
 		Issuer:          envconfig.Must("OIDC_ISSUER"),
@@ -50,6 +55,7 @@ func main() {
 			httpClient,
 		),
 		Calendar:       calendar,
+		Outlook:        outlookclient.New(envconfig.Must("OUTLOOK_URL"), outlookCredential, httpClient),
 		Proposals:      meeting.NewStore(),
 		Approvals:      approvalauthority.NewClient(envconfig.Must("APPROVAL_AUTHORITY_URL"), envconfig.Must("APPROVAL_CONSUMER_CREDENTIAL"), httpClient),
 		CalendarEvents: calendar,
