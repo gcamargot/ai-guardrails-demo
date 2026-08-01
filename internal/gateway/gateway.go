@@ -6,9 +6,9 @@ import (
 	"errors"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/nahtao97/agent-tool-guardrails/internal/freebusy"
 )
 
 type Subject string
@@ -77,22 +77,8 @@ type CoffeeStationStatus struct {
 	State     string    `json:"state"`
 }
 
-type AvailabilityQuery struct {
-	Start time.Time
-	End   time.Time
-}
-
-type AvailableInterval struct {
-	Start string `json:"start"`
-	End   string `json:"end"`
-}
-
-type FreeBusyView struct {
-	AvailableIntervals []AvailableInterval `json:"available_intervals"`
-}
-
 type Calendar interface {
-	FindAvailability(context.Context, AvailabilityQuery) (FreeBusyView, error)
+	FindAvailability(context.Context, freebusy.Window) (freebusy.View, error)
 	Health(context.Context) error
 }
 
@@ -109,8 +95,8 @@ type coffeeStationStatusInput struct {
 }
 
 type findAvailabilityInput struct {
-	Start string `json:"start" jsonschema:"RFC3339 start of the requested availability window"`
-	End   string `json:"end" jsonschema:"RFC3339 end of the requested availability window"`
+	Start freebusy.RFC3339 `json:"start" jsonschema:"RFC3339 start of the requested availability window"`
+	End   freebusy.RFC3339 `json:"end" jsonschema:"RFC3339 end of the requested availability window"`
 }
 
 func NewHandler(deps Dependencies) http.Handler {
@@ -225,13 +211,13 @@ func newMCPServer(deps Dependencies, securityContext SecurityContext) *mcp.Serve
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        string(findAvailabilityTool),
 		Description: "Return only available intervals from the isolated demo calendar.",
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, input findAvailabilityInput) (*mcp.CallToolResult, FreeBusyView, error) {
-		start, startErr := time.Parse(time.RFC3339, input.Start)
-		end, endErr := time.Parse(time.RFC3339, input.End)
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input findAvailabilityInput) (*mcp.CallToolResult, freebusy.View, error) {
+		start, startErr := input.Start.Time()
+		end, endErr := input.End.Time()
 		if startErr != nil || endErr != nil || !end.After(start) {
 			result := &mcp.CallToolResult{}
 			result.SetError(errors.New("invalid availability window"))
-			return result, FreeBusyView{}, nil
+			return result, freebusy.View{}, nil
 		}
 		decision, err := deps.Policy.Decide(ctx, PolicyInput{
 			SecurityContext: securityContext,
@@ -240,7 +226,7 @@ func newMCPServer(deps Dependencies, securityContext SecurityContext) *mcp.Serve
 			Arguments:       input,
 		})
 		if err != nil {
-			return nil, FreeBusyView{}, err
+			return nil, freebusy.View{}, err
 		}
 		result := &mcp.CallToolResult{Meta: mcp.Meta{
 			"decision_id":     decision.DecisionID,
@@ -248,24 +234,24 @@ func newMCPServer(deps Dependencies, securityContext SecurityContext) *mcp.Serve
 		}}
 		if !decision.Allow {
 			result.SetError(errors.New("tool call denied by policy"))
-			return result, FreeBusyView{}, nil
+			return result, freebusy.View{}, nil
 		}
 		if deps.Calendar == nil {
-			return nil, FreeBusyView{}, errors.New("calendar is unavailable")
+			return nil, freebusy.View{}, errors.New("calendar is unavailable")
 		}
-		view, err := deps.Calendar.FindAvailability(ctx, AvailabilityQuery{Start: start, End: end})
+		view, err := deps.Calendar.FindAvailability(ctx, freebusy.Window{Start: start, End: end})
 		if err != nil {
-			return nil, FreeBusyView{}, err
+			return nil, freebusy.View{}, err
 		}
 		previousEnd := start
 		for _, interval := range view.AvailableIntervals {
-			intervalStart, intervalStartErr := time.Parse(time.RFC3339, interval.Start)
-			intervalEnd, intervalEndErr := time.Parse(time.RFC3339, interval.End)
+			intervalStart, intervalStartErr := interval.Start.Time()
+			intervalEnd, intervalEndErr := interval.End.Time()
 			if intervalStartErr != nil || intervalEndErr != nil ||
 				intervalStart.Before(start) || intervalEnd.After(end) ||
 				!intervalEnd.After(intervalStart) || intervalStart.Before(previousEnd) {
 				result.SetError(errors.New("calendar returned an invalid Free/Busy View"))
-				return result, FreeBusyView{}, nil
+				return result, freebusy.View{}, nil
 			}
 			previousEnd = intervalEnd
 		}

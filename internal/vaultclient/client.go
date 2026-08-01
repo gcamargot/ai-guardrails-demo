@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 )
 
@@ -13,6 +14,18 @@ type Client struct {
 	baseURL    string
 	token      string
 	httpClient *http.Client
+}
+
+func ReadToken(path string) (string, error) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read Vault token file: %w", err)
+	}
+	token := strings.TrimSpace(string(content))
+	if token == "" {
+		return "", errors.New("Vault token file is empty")
+	}
+	return token, nil
 }
 
 func New(baseURL, token string, httpClient *http.Client) *Client {

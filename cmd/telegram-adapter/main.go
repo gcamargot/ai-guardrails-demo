@@ -3,36 +3,36 @@ package main
 import (
 	"log"
 	"net/http"
-	"os"
 	"strconv"
 	"time"
 
+	"github.com/nahtao97/agent-tool-guardrails/internal/envconfig"
 	"github.com/nahtao97/agent-tool-guardrails/internal/telegramadapter"
 )
 
 func main() {
 	httpClient := &http.Client{Timeout: 5 * time.Second}
-	subject := telegramadapter.Subject(requiredEnvironment("EXTERNAL_SUBJECT"))
-	userID, err := strconv.ParseInt(requiredEnvironment("TELEGRAM_USER_ID"), 10, 64)
+	subject := telegramadapter.Subject(envconfig.Must("EXTERNAL_SUBJECT"))
+	userID, err := strconv.ParseInt(envconfig.Must("TELEGRAM_USER_ID"), 10, 64)
 	if err != nil {
 		log.Fatalf("parse verified Telegram user ID: %v", err)
 	}
 	availability := telegramadapter.NewGatewayClient(telegramadapter.GatewayClientConfig{
-		Endpoint:      requiredEnvironment("GATEWAY_MCP_URL"),
-		TokenEndpoint: requiredEnvironment("KEYCLOAK_TOKEN_URL"),
+		Endpoint:      envconfig.Must("GATEWAY_MCP_URL"),
+		TokenEndpoint: envconfig.Must("KEYCLOAK_TOKEN_URL"),
 		ClientID:      "telegram-agent",
-		ClientSecret:  requiredEnvironment("TELEGRAM_OIDC_CLIENT_SECRET"),
+		ClientSecret:  envconfig.Must("TELEGRAM_OIDC_CLIENT_SECRET"),
 		Subject:       subject,
-		Username:      requiredEnvironment("EXTERNAL_USERNAME"),
-		Password:      requiredEnvironment("EXTERNAL_PASSWORD"),
+		Username:      envconfig.Must("EXTERNAL_USERNAME"),
+		Password:      envconfig.Must("EXTERNAL_PASSWORD"),
 		HTTPClient:    httpClient,
 	})
 	handler := telegramadapter.NewHandler(telegramadapter.Config{
-		WebhookSecret: requiredEnvironment("TELEGRAM_WEBHOOK_SECRET"),
+		WebhookSecret: envconfig.Must("TELEGRAM_WEBHOOK_SECRET"),
 		VerifiedUsers: map[telegramadapter.TelegramUserID]telegramadapter.Subject{
 			telegramadapter.TelegramUserID(userID): subject,
 		},
-		ClassifierURL: requiredEnvironment("QWEN_URL") + "/classify",
+		ClassifierURL: envconfig.Must("QWEN_URL") + "/classify",
 		HTTPClient:    httpClient,
 		Availability:  availability,
 	})
@@ -47,12 +47,4 @@ func main() {
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
-}
-
-func requiredEnvironment(name string) string {
-	value := os.Getenv(name)
-	if value == "" {
-		log.Fatalf("required environment variable %s is missing", name)
-	}
-	return value
 }

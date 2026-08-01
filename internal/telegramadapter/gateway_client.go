@@ -6,10 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/nahtao97/agent-tool-guardrails/internal/oidcclient"
 	"golang.org/x/oauth2"
 )
 
@@ -40,7 +40,12 @@ func (client *GatewayClient) FindAvailability(
 	if identity.Subject != client.config.Subject || identity.Actor != "telegram-agent" || identity.Channel != "telegram" {
 		return nil, errors.New("trusted Telegram identity does not match gateway credentials")
 	}
-	token, err := client.obtainToken(ctx)
+	token, err := (oidcclient.Client{
+		Endpoint:     client.config.TokenEndpoint,
+		ClientID:     client.config.ClientID,
+		ClientSecret: client.config.ClientSecret,
+		HTTPClient:   client.config.HTTPClient,
+	}).PasswordToken(ctx, client.config.Username, client.config.Password)
 	if err != nil {
 		return nil, err
 	}
@@ -89,38 +94,4 @@ func (client *GatewayClient) FindAvailability(
 		return nil, fmt.Errorf("decode Free/Busy View: %w", err)
 	}
 	return view.AvailableIntervals, nil
-}
-
-func (client *GatewayClient) obtainToken(ctx context.Context) (string, error) {
-	form := url.Values{
-		"grant_type":    {"password"},
-		"client_id":     {client.config.ClientID},
-		"client_secret": {client.config.ClientSecret},
-		"username":      {client.config.Username},
-		"password":      {client.config.Password},
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, client.config.TokenEndpoint, strings.NewReader(form.Encode()))
-	if err != nil {
-		return "", fmt.Errorf("create identity token request: %w", err)
-	}
-	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	httpClient := client.config.HTTPClient
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
-	response, err := httpClient.Do(request)
-	if err != nil {
-		return "", fmt.Errorf("request identity token: %w", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("identity provider returned HTTP %d", response.StatusCode)
-	}
-	var document struct {
-		AccessToken string `json:"access_token"`
-	}
-	if err := json.NewDecoder(response.Body).Decode(&document); err != nil || document.AccessToken == "" {
-		return "", errors.New("identity provider returned no access token")
-	}
-	return document.AccessToken, nil
 }

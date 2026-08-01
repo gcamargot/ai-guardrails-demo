@@ -7,6 +7,8 @@ import (
 	"errors"
 	"net/http"
 	"time"
+
+	"github.com/nahtao97/agent-tool-guardrails/internal/freebusy"
 )
 
 type TelegramUserID int64
@@ -20,15 +22,8 @@ type TrustedTelegramIdentity struct {
 	Channel Channel
 }
 
-type AvailabilityQuery struct {
-	Start time.Time
-	End   time.Time
-}
-
-type AvailableInterval struct {
-	Start string `json:"start"`
-	End   string `json:"end"`
-}
+type AvailabilityQuery = freebusy.Window
+type AvailableInterval = freebusy.AvailableInterval
 
 type AvailabilityGateway interface {
 	FindAvailability(context.Context, TrustedTelegramIdentity, AvailabilityQuery) ([]AvailableInterval, error)
@@ -132,5 +127,5 @@ func classify(ctx context.Context, client *http.Client, endpoint, text string) (
 	if err != nil {
 		return AvailabilityQuery{}, err
 	}
-	return AvailabilityQuery{Start: start, End: end}, nil
+	return freebusy.Window{Start: start, End: end}, nil
 }

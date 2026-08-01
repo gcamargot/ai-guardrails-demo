@@ -11,6 +11,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/nahtao97/agent-tool-guardrails/internal/calendarclient"
+	"github.com/nahtao97/agent-tool-guardrails/internal/freebusy"
 	"github.com/nahtao97/agent-tool-guardrails/internal/gateway"
 	"golang.org/x/oauth2"
 )
@@ -573,8 +574,8 @@ func (availabilityOnlyPolicy) Health(context.Context) error { return nil }
 
 type availableCalendar struct{}
 
-func (availableCalendar) FindAvailability(context.Context, gateway.AvailabilityQuery) (gateway.FreeBusyView, error) {
-	return gateway.FreeBusyView{AvailableIntervals: []gateway.AvailableInterval{{
+func (availableCalendar) FindAvailability(context.Context, freebusy.Window) (freebusy.View, error) {
+	return freebusy.View{AvailableIntervals: []freebusy.AvailableInterval{{
 		Start: "2026-08-03T10:00:00Z",
 		End:   "2026-08-03T10:30:00Z",
 	}}}, nil
@@ -584,8 +585,8 @@ func (availableCalendar) Health(context.Context) error { return nil }
 
 type outOfBoundsCalendar struct{}
 
-func (outOfBoundsCalendar) FindAvailability(context.Context, gateway.AvailabilityQuery) (gateway.FreeBusyView, error) {
-	return gateway.FreeBusyView{AvailableIntervals: []gateway.AvailableInterval{{
+func (outOfBoundsCalendar) FindAvailability(context.Context, freebusy.Window) (freebusy.View, error) {
+	return freebusy.View{AvailableIntervals: []freebusy.AvailableInterval{{
 		Start: "2026-08-03T08:00:00Z",
 		End:   "2026-08-03T10:00:00Z",
 	}}}, nil

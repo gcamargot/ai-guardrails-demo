@@ -2,7 +2,7 @@
 set -eu
 
 cleanup() {
-  docker compose down --remove-orphans
+  docker compose down --remove-orphans --volumes
 }
 trap cleanup EXIT INT TERM
 

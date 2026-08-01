@@ -32,7 +32,7 @@ The Telegram ingress verifies its webhook secret before mapping the Telegram use
 
 OPA allows the External Subject to discover only `calendar.find_availability`. Execution is constrained to weekdays, 09:00–17:00 UTC, and a 14-day future horizon. The calendar HTTP client rejects unknown response fields, while the MCP boundary independently validates that every returned interval is ordered and contained within the authorized request. Titles, descriptions, attendees and occupied-event details are not part of any response type.
 
-Vault is the source of the calendar credential for both sides of the isolated connection. The credential is placed only in an authorization header between the gateway and calendar and is never sent to Qwen, MCP output or OPA decision input.
+Vault is the source of the calendar credential for both sides of the isolated connection. The demo initializer creates separate, read-only Vault policies and ephemeral tokens for the gateway and calendar; token files live in a temporary Compose volume removed by smoke teardown. The calendar credential is placed only in an authorization header between the gateway and calendar and is never sent to Qwen, MCP output or OPA decision input.
 
 ## Test
 

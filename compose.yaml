@@ -53,9 +53,17 @@ services:
       VAULT_ADDR: http://vault:8200
       VAULT_TOKEN: demo-vault-root-token
     entrypoint: /bin/sh
+    volumes:
+      - ./policies/vault:/config:ro
+      - vault-tokens:/tokens
     command:
       - -ec
-      - vault kv put secret/calendar credential=demo-calendar-credential >/dev/null
+      - |
+        vault policy write gateway-calendar-reader /config/gateway-calendar-reader.hcl >/dev/null
+        vault policy write calendar-resource-reader /config/calendar-resource-reader.hcl >/dev/null
+        vault kv put secret/calendar credential=demo-calendar-credential >/dev/null
+        vault token create -field=token -policy=gateway-calendar-reader -no-default-policy > /tokens/gateway
+        vault token create -field=token -policy=calendar-resource-reader -no-default-policy > /tokens/calendar
     depends_on:
       vault:
         condition: service_healthy
@@ -77,7 +85,7 @@ services:
     build: .
     command: /app/calendar
     environment:
-      VAULT_TOKEN: demo-vault-root-token
+      VAULT_TOKEN_FILE: /run/vault-token/calendar
       VAULT_URL: http://vault:8200
     depends_on:
       vault-init:
@@ -85,6 +93,8 @@ services:
     networks:
       - protected
       - secrets
+    volumes:
+      - vault-tokens:/run/vault-token:ro
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8083/healthz"]
       interval: 2s
@@ -102,7 +112,7 @@ services:
       OIDC_AUDIENCE: agent-tools-gateway
       OIDC_ISSUER: http://keycloak:8080/realms/agent-tools
       OIDC_REQUIRED_SCOPES: coffee_station.read
-      VAULT_TOKEN: demo-vault-root-token
+      VAULT_TOKEN_FILE: /run/vault-token/gateway
       VAULT_URL: http://vault:8200
     depends_on:
       calendar:
@@ -123,6 +133,8 @@ services:
       - identity
       - protected
       - secrets
+    volumes:
+      - vault-tokens:/run/vault-token:ro
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/healthz"]
       interval: 2s
@@ -140,7 +152,7 @@ services:
       OIDC_AUDIENCE: agent-tools-gateway
       OIDC_ISSUER: http://keycloak:8080/realms/agent-tools
       OIDC_REQUIRED_SCOPES: calendar.free_busy.read
-      VAULT_TOKEN: demo-vault-root-token
+      VAULT_TOKEN_FILE: /run/vault-token/gateway
       VAULT_URL: http://vault:8200
     depends_on:
       calendar:
@@ -159,6 +171,8 @@ services:
       - identity
       - protected
       - secrets
+    volumes:
+      - vault-tokens:/run/vault-token:ro
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/healthz"]
       interval: 2s
@@ -237,3 +251,6 @@ networks:
     internal: true
   model:
     internal: true
+
+volumes:
+  vault-tokens: {}

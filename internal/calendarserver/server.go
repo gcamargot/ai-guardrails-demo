@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/nahtao97/agent-tool-guardrails/internal/gateway"
+	"github.com/nahtao97/agent-tool-guardrails/internal/freebusy"
 )
 
 func NewHandler(expectedCredential string) http.Handler {
@@ -28,7 +28,7 @@ func NewHandler(expectedCredential string) http.Handler {
 
 		occupiedStart := time.Date(start.Year(), start.Month(), start.Day(), 10, 30, 0, 0, time.UTC)
 		occupiedEnd := occupiedStart.Add(30 * time.Minute)
-		intervals := make([]gateway.AvailableInterval, 0, 2)
+		intervals := make([]freebusy.AvailableInterval, 0, 2)
 		if start.Before(occupiedStart) {
 			freeEnd := minTime(end, occupiedStart)
 			if freeEnd.After(start) {
@@ -42,16 +42,16 @@ func NewHandler(expectedCredential string) http.Handler {
 			}
 		}
 		if !start.Before(occupiedEnd) || !end.After(occupiedStart) {
-			intervals = []gateway.AvailableInterval{interval(start, end)}
+			intervals = []freebusy.AvailableInterval{interval(start, end)}
 		}
 		response.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(response).Encode(gateway.FreeBusyView{AvailableIntervals: intervals})
+		_ = json.NewEncoder(response).Encode(freebusy.View{AvailableIntervals: intervals})
 	})
 	return mux
 }
 
-func interval(start, end time.Time) gateway.AvailableInterval {
-	return gateway.AvailableInterval{Start: start.Format(time.RFC3339), End: end.Format(time.RFC3339)}
+func interval(start, end time.Time) freebusy.AvailableInterval {
+	return freebusy.AvailableInterval{Start: freebusy.NewRFC3339(start), End: freebusy.NewRFC3339(end)}
 }
 
 func minTime(left, right time.Time) time.Time {

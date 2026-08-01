@@ -7,12 +7,12 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/nahtao97/agent-tool-guardrails/internal/oidcclient"
 	"golang.org/x/oauth2"
 )
 
@@ -70,33 +70,16 @@ func main() {
 }
 
 func obtainToken(ctx context.Context, endpoint, clientID, clientSecret, username, password string) string {
-	form := url.Values{
-		"grant_type":    {"password"},
-		"client_id":     {clientID},
-		"client_secret": {clientSecret},
-		"username":      {username},
-		"password":      {password},
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
-	if err != nil {
-		log.Fatalf("create %s token request: %v", clientID, err)
-	}
-	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	response, err := http.DefaultClient.Do(request)
+	token, err := (oidcclient.Client{
+		Endpoint:     endpoint,
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
+		HTTPClient:   http.DefaultClient,
+	}).PasswordToken(ctx, username, password)
 	if err != nil {
 		log.Fatalf("request %s token: %v", clientID, err)
 	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		log.Fatalf("request %s token: HTTP %d", clientID, response.StatusCode)
-	}
-	var document struct {
-		AccessToken string `json:"access_token"`
-	}
-	if err := json.NewDecoder(response.Body).Decode(&document); err != nil || document.AccessToken == "" {
-		log.Fatalf("decode %s access token: token_present=%t err=%v", clientID, document.AccessToken != "", err)
-	}
-	return document.AccessToken
+	return token
 }
 
 func callCoffeeStation(ctx context.Context, endpoint, token string, meta mcp.Meta) any {
