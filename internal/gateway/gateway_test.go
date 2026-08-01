@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -14,6 +15,16 @@ import (
 
 func connectGateway(t *testing.T, dependencies gateway.Dependencies) *mcp.ClientSession {
 	t.Helper()
+	if dependencies.Identity == nil {
+		dependencies.Identity = fixedIdentity{
+			Subject:          "owner",
+			Actor:            "demo-mcp-client",
+			TurnCapabilities: []gateway.Capability{"coffee_station.read"},
+		}
+	}
+	if dependencies.Channel == "" {
+		dependencies.Channel = "streamable-http"
+	}
 
 	server := httptest.NewServer(gateway.NewHandler(dependencies))
 	t.Cleanup(server.Close)
@@ -21,6 +32,10 @@ func connectGateway(t *testing.T, dependencies gateway.Dependencies) *mcp.Client
 	session, err := client.Connect(t.Context(), &mcp.StreamableClientTransport{
 		Endpoint:             server.URL + "/mcp",
 		DisableStandaloneSSE: true,
+		HTTPClient: &http.Client{Transport: bearerTransport{
+			Token: "valid-token",
+			Base:  http.DefaultTransport,
+		}},
 	}, nil)
 	if err != nil {
 		t.Fatalf("connect to MCP gateway: %v", err)
@@ -29,13 +44,111 @@ func connectGateway(t *testing.T, dependencies gateway.Dependencies) *mcp.Client
 	return session
 }
 
+func TestMissingBearerTokenFailsBeforePolicyAndProtectedResource(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(gateway.NewHandler(gateway.Dependencies{
+		Identity:      fixedIdentity{Subject: "owner", Actor: "demo-mcp-client"},
+		Channel:       "streamable-http",
+		Policy:        unreachablePolicy{t: t},
+		CoffeeStation: unreachableCoffeeStation{t: t},
+	}))
+	t.Cleanup(server.Close)
+
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL+"/mcp", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatalf("create unauthenticated MCP request: %v", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("send unauthenticated MCP request: %v", err)
+	}
+	t.Cleanup(func() { _ = response.Body.Close() })
+
+	if response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", response.StatusCode, http.StatusUnauthorized)
+	}
+}
+
+func TestInvalidBearerTokenFailsBeforePolicyAndProtectedResource(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(gateway.NewHandler(gateway.Dependencies{
+		Identity:      rejectingIdentity{},
+		Channel:       "streamable-http",
+		Policy:        unreachablePolicy{t: t},
+		CoffeeStation: unreachableCoffeeStation{t: t},
+	}))
+	t.Cleanup(server.Close)
+
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL+"/mcp", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatalf("create invalid-token MCP request: %v", err)
+	}
+	request.Header.Set("Authorization", "Bearer malformed-token")
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("send invalid-token MCP request: %v", err)
+	}
+	t.Cleanup(func() { _ = response.Body.Close() })
+
+	if response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", response.StatusCode, http.StatusUnauthorized)
+	}
+}
+
+func TestEffectiveSecurityContextComesFromBearerTokenAndChannelBinding(t *testing.T) {
+	t.Parallel()
+
+	policy := &capturingPolicy{}
+	session := connectGateway(t, gateway.Dependencies{
+		Identity: fixedIdentity{
+			Subject:          "owner-subject-id",
+			Actor:            "coding-agent",
+			TurnCapabilities: []gateway.Capability{"coffee_station.read"},
+		},
+		Channel:       "streamable-http",
+		Policy:        policy,
+		CoffeeStation: readyCoffeeStation{},
+	})
+
+	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+		Meta: mcp.Meta{"model_interpretation": map[string]any{
+			"user":         "attacker",
+			"actor":        "telegram-agent",
+			"capabilities": []string{"smart_lock.write"},
+		}},
+		Name:      "coffee_station.get_status",
+		Arguments: map[string]any{"station_id": "demo-station"},
+	})
+	if err != nil {
+		t.Fatalf("call coffee station tool: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("tool returned an error: %v", result.GetError())
+	}
+
+	got := policy.lastInput.SecurityContext
+	want := gateway.SecurityContext{
+		Subject:          "owner-subject-id",
+		Actor:            "coding-agent",
+		Channel:          "streamable-http",
+		TurnCapabilities: []gateway.Capability{"coffee_station.read"},
+	}
+	if got.Subject != want.Subject || got.Actor != want.Actor || got.Channel != want.Channel ||
+		len(got.TurnCapabilities) != 1 || got.TurnCapabilities[0] != want.TurnCapabilities[0] {
+		t.Fatalf("effective Security Context = %#v, want %#v", got, want)
+	}
+}
+
 func TestAuthorizedCallerCanReadCoffeeStationStatus(t *testing.T) {
 	t.Parallel()
 
 	session := connectGateway(t, gateway.Dependencies{
-		SecurityContext: gateway.SecurityContext{Subject: "owner"},
-		Policy:          allowPolicy{},
-		CoffeeStation:   readyCoffeeStation{},
+		Policy:        allowPolicy{},
+		CoffeeStation: readyCoffeeStation{},
 	})
 
 	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
@@ -65,9 +178,8 @@ func TestDeniedCallerCannotReachCoffeeStation(t *testing.T) {
 	t.Parallel()
 
 	session := connectGateway(t, gateway.Dependencies{
-		SecurityContext: gateway.SecurityContext{Subject: "external"},
-		Policy:          denyPolicy{},
-		CoffeeStation:   unreachableCoffeeStation{t: t},
+		Policy:        denyPolicy{},
+		CoffeeStation: unreachableCoffeeStation{t: t},
 	})
 
 	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
@@ -89,9 +201,8 @@ func TestDeniedCallerCannotDiscoverCoffeeStationTool(t *testing.T) {
 	t.Parallel()
 
 	session := connectGateway(t, gateway.Dependencies{
-		SecurityContext: gateway.SecurityContext{Subject: "external"},
-		Policy:          denyPolicy{},
-		CoffeeStation:   readyCoffeeStation{},
+		Policy:        denyPolicy{},
+		CoffeeStation: readyCoffeeStation{},
 	})
 
 	result, err := session.ListTools(t.Context(), nil)
@@ -107,9 +218,8 @@ func TestUnknownInputFieldIsRejected(t *testing.T) {
 	t.Parallel()
 
 	session := connectGateway(t, gateway.Dependencies{
-		SecurityContext: gateway.SecurityContext{Subject: "owner"},
-		Policy:          unreachablePolicy{t: t},
-		CoffeeStation:   unreachableCoffeeStation{t: t},
+		Policy:        unreachablePolicy{t: t},
+		CoffeeStation: unreachableCoffeeStation{t: t},
 	})
 
 	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
@@ -131,9 +241,8 @@ func TestInvalidCoffeeStationResponseIsRejected(t *testing.T) {
 	t.Parallel()
 
 	session := connectGateway(t, gateway.Dependencies{
-		SecurityContext: gateway.SecurityContext{Subject: "owner"},
-		Policy:          allowPolicy{},
-		CoffeeStation:   invalidCoffeeStation{},
+		Policy:        allowPolicy{},
+		CoffeeStation: invalidCoffeeStation{},
 	})
 
 	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
@@ -155,9 +264,8 @@ func TestHealthReportsReadyWhenPolicyIsAvailable(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(gateway.NewHandler(gateway.Dependencies{
-		SecurityContext: gateway.SecurityContext{Subject: "owner"},
-		Policy:          allowPolicy{},
-		CoffeeStation:   readyCoffeeStation{},
+		Policy:        allowPolicy{},
+		CoffeeStation: readyCoffeeStation{},
 	}))
 	t.Cleanup(server.Close)
 
@@ -186,9 +294,8 @@ func TestHealthReportsUnavailableWhenPolicyCannotBeReached(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(gateway.NewHandler(gateway.Dependencies{
-		SecurityContext: gateway.SecurityContext{Subject: "owner"},
-		Policy:          unavailablePolicy{},
-		CoffeeStation:   readyCoffeeStation{},
+		Policy:        unavailablePolicy{},
+		CoffeeStation: readyCoffeeStation{},
 	}))
 	t.Cleanup(server.Close)
 
@@ -214,9 +321,8 @@ func TestHealthReportsUnavailableWhenProtectedResourceCannotBeReached(t *testing
 	t.Parallel()
 
 	server := httptest.NewServer(gateway.NewHandler(gateway.Dependencies{
-		SecurityContext: gateway.SecurityContext{Subject: "owner"},
-		Policy:          allowPolicy{},
-		CoffeeStation:   unavailableCoffeeStation{},
+		Policy:        allowPolicy{},
+		CoffeeStation: unavailableCoffeeStation{},
 	}))
 	t.Cleanup(server.Close)
 
@@ -309,3 +415,37 @@ func (station unreachableCoffeeStation) Status(context.Context, gateway.StationI
 }
 
 func (unreachableCoffeeStation) Health(context.Context) error { return nil }
+
+type fixedIdentity gateway.TrustedIdentity
+
+func (identity fixedIdentity) Verify(context.Context, string) (gateway.TrustedIdentity, error) {
+	return gateway.TrustedIdentity(identity), nil
+}
+
+type rejectingIdentity struct{}
+
+func (rejectingIdentity) Verify(context.Context, string) (gateway.TrustedIdentity, error) {
+	return gateway.TrustedIdentity{}, errors.New("token rejected")
+}
+
+type bearerTransport struct {
+	Token string
+	Base  http.RoundTripper
+}
+
+func (transport bearerTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	clone := request.Clone(request.Context())
+	clone.Header.Set("Authorization", "Bearer "+transport.Token)
+	return transport.Base.RoundTrip(clone)
+}
+
+type capturingPolicy struct {
+	lastInput gateway.PolicyInput
+}
+
+func (policy *capturingPolicy) Decide(_ context.Context, input gateway.PolicyInput) (gateway.PolicyDecision, error) {
+	policy.lastInput = input
+	return gateway.PolicyDecision{Allow: true, DecisionID: "decision-allow"}, nil
+}
+
+func (*capturingPolicy) Health(context.Context) error { return nil }

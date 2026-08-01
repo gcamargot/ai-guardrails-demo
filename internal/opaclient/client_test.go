@@ -10,6 +10,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/nahtao97/agent-tool-guardrails/internal/gateway"
 	"github.com/nahtao97/agent-tool-guardrails/internal/opaclient"
+	"golang.org/x/oauth2"
 )
 
 func TestGatewayUsesOPADecisionToAllowToolCall(t *testing.T) {
@@ -25,21 +26,24 @@ func TestGatewayUsesOPADecisionToAllowToolCall(t *testing.T) {
 		if err := json.NewDecoder(request.Body).Decode(&document); err != nil {
 			t.Fatalf("decode OPA input: %v", err)
 		}
-		if document.Input.SecurityContext.Subject != "owner" {
-			t.Errorf("OPA subject = %q, want owner", document.Input.SecurityContext.Subject)
+		if document.Input.SecurityContext.Subject != "owner-subject-id" {
+			t.Errorf("OPA subject = %q, want owner-subject-id", document.Input.SecurityContext.Subject)
 		}
 		if document.Input.Tool != "coffee_station.get_status" {
 			t.Errorf("OPA tool = %q, want coffee_station.get_status", document.Input.Tool)
 		}
 		response.Header().Set("Content-Type", "application/json")
-		_, _ = response.Write([]byte(`{"decision_id":"opa-allow","result":{"allow":true,"policy_revision":"ticket-01"}}`))
+		_, _ = response.Write([]byte(`{"decision_id":"opa-allow","result":{"allow":true,"policy_revision":"ticket-02"}}`))
 	}))
 	t.Cleanup(policyServer.Close)
 
 	server := httptest.NewServer(gateway.NewHandler(gateway.Dependencies{
-		SecurityContext: gateway.SecurityContext{Subject: "owner"},
-		Policy:          opaclient.New(policyServer.URL, policyServer.Client()),
-		CoffeeStation:   readyCoffeeStation{},
+		Identity: gateway.IdentityVerifierFunc(func(context.Context, string) (gateway.TrustedIdentity, error) {
+			return gateway.TrustedIdentity{Subject: "owner-subject-id", Actor: "coding-agent", TurnCapabilities: []gateway.Capability{"coffee_station.read"}}, nil
+		}),
+		Channel:       "streamable-http",
+		Policy:        opaclient.New(policyServer.URL, policyServer.Client()),
+		CoffeeStation: readyCoffeeStation{},
 	}))
 	t.Cleanup(server.Close)
 
@@ -47,6 +51,9 @@ func TestGatewayUsesOPADecisionToAllowToolCall(t *testing.T) {
 	session, err := client.Connect(t.Context(), &mcp.StreamableClientTransport{
 		Endpoint:             server.URL + "/mcp",
 		DisableStandaloneSSE: true,
+		HTTPClient: oauth2.NewClient(t.Context(), oauth2.StaticTokenSource(&oauth2.Token{
+			AccessToken: "valid-token",
+		})),
 	}, nil)
 	if err != nil {
 		t.Fatalf("connect to MCP gateway: %v", err)
@@ -66,8 +73,8 @@ func TestGatewayUsesOPADecisionToAllowToolCall(t *testing.T) {
 	if got := result.Meta["decision_id"]; got != "opa-allow" {
 		t.Errorf("decision_id = %v, want opa-allow", got)
 	}
-	if got := result.Meta["policy_revision"]; got != "ticket-01" {
-		t.Errorf("policy_revision = %v, want ticket-01", got)
+	if got := result.Meta["policy_revision"]; got != "ticket-02" {
+		t.Errorf("policy_revision = %v, want ticket-02", got)
 	}
 }
 

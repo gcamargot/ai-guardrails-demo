@@ -1,0 +1,98 @@
+{
+  "realm": "agent-tools",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": false,
+  "accessTokenLifespan": 300,
+  "clientScopes": [
+    {
+      "name": "coffee_station.read",
+      "description": "Turn Capability for the demo coffee station status Tool",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "authenticated-subject",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-sub-mapper",
+          "consentRequired": false,
+          "config": {
+            "access.token.claim": "true",
+            "lightweight.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "agent-tools-gateway-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "agent-tools-gateway",
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "lightweight.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "agent-tools-gateway",
+      "name": "Agent Tool Gateway audience",
+      "enabled": true,
+      "bearerOnly": true,
+      "protocol": "openid-connect"
+    },
+    {
+      "clientId": "telegram-agent",
+      "name": "Telegram agent demo Actor",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "telegram-demo-secret",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "publicClient": false,
+      "protocol": "openid-connect",
+      "defaultClientScopes": ["coffee_station.read"]
+    },
+    {
+      "clientId": "coding-agent",
+      "name": "Coding agent demo Actor",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "coding-demo-secret",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "publicClient": false,
+      "protocol": "openid-connect",
+      "defaultClientScopes": ["coffee_station.read"]
+    }
+  ],
+  "users": [
+    {
+      "id": "owner-subject-id",
+      "username": "owner",
+      "firstName": "Demo",
+      "lastName": "Owner",
+      "email": "owner@example.invalid",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "owner-demo-password",
+          "temporary": false
+        }
+      ]
+    }
+  ]
+}

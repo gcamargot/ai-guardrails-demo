@@ -1,4 +1,23 @@
 services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.7.0
+    command: start-dev --import-realm
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: demo-admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: demo-admin-password
+      KC_HEALTH_ENABLED: "true"
+    volumes:
+      - ./keycloak/agent-tools-realm.json:/opt/keycloak/data/import/agent-tools-realm.json:ro
+    ports:
+      - "127.0.0.1:8082:8080"
+    networks:
+      - identity
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9000; printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3; grep -q '200 OK' <&3"]
+      interval: 3s
+      timeout: 2s
+      retries: 30
+
   opa:
     image: openpolicyagent/opa:1.17.0-static
     command:
@@ -28,13 +47,15 @@ services:
     build: .
     command: /app/gateway
     environment:
+      AUTH_CHANNEL: streamable-http
       COFFEE_STATION_URL: http://coffee-station:8081
-      DEMO_ACTOR: demo-mcp-client
-      DEMO_CHANNEL: streamable-http
-      DEMO_SUBJECT: owner
       OPA_URL: http://opa:8181
+      OIDC_AUDIENCE: agent-tools-gateway
+      OIDC_ISSUER: http://keycloak:8080/realms/agent-tools
     depends_on:
       coffee-station:
+        condition: service_healthy
+      keycloak:
         condition: service_healthy
       opa:
         condition: service_started
@@ -43,6 +64,7 @@ services:
     networks:
       - public
       - control
+      - identity
       - protected
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/healthz"]
@@ -55,17 +77,21 @@ services:
     command: /app/smoke
     environment:
       GATEWAY_MCP_URL: http://gateway:8080/mcp
+      KEYCLOAK_TOKEN_URL: http://keycloak:8080/realms/agent-tools/protocol/openid-connect/token
     depends_on:
       gateway:
         condition: service_healthy
     networks:
       - public
+      - identity
     profiles:
       - test
 
 networks:
   public: {}
   control:
+    internal: true
+  identity:
     internal: true
   protected:
     internal: true

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -28,6 +29,22 @@ type SecurityContext struct {
 	Actor            Actor        `json:"actor"`
 	Channel          Channel      `json:"channel"`
 	TurnCapabilities []Capability `json:"turn_capabilities"`
+}
+
+type TrustedIdentity struct {
+	Subject          Subject
+	Actor            Actor
+	TurnCapabilities []Capability
+}
+
+type IdentityVerifier interface {
+	Verify(context.Context, string) (TrustedIdentity, error)
+}
+
+type IdentityVerifierFunc func(context.Context, string) (TrustedIdentity, error)
+
+func (verify IdentityVerifierFunc) Verify(ctx context.Context, token string) (TrustedIdentity, error) {
+	return verify(ctx, token)
 }
 
 type PolicyInput struct {
@@ -59,9 +76,10 @@ type CoffeeStationStatus struct {
 }
 
 type Dependencies struct {
-	SecurityContext SecurityContext
-	Policy          PolicyClient
-	CoffeeStation   CoffeeStation
+	Identity      IdentityVerifier
+	Channel       Channel
+	Policy        PolicyClient
+	CoffeeStation CoffeeStation
 }
 
 type coffeeStationStatusInput struct {
@@ -69,6 +87,48 @@ type coffeeStationStatusInput struct {
 }
 
 func NewHandler(deps Dependencies) http.Handler {
+	mcpHandler := mcp.NewStreamableHTTPHandler(
+		func(request *http.Request) *mcp.Server {
+			identity, ok := request.Context().Value(identityContextKey{}).(TrustedIdentity)
+			if !ok {
+				return newMCPServer(deps, SecurityContext{})
+			}
+			return newMCPServer(deps, SecurityContext{
+				Subject:          identity.Subject,
+				Actor:            identity.Actor,
+				Channel:          deps.Channel,
+				TurnCapabilities: identity.TurnCapabilities,
+			})
+		},
+		&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true},
+	)
+
+	mux := http.NewServeMux()
+	mux.Handle("/mcp", authenticate(deps.Identity, mcpHandler))
+	mux.HandleFunc("GET /healthz", healthHandler(deps))
+	return mux
+}
+
+type identityContextKey struct{}
+
+func authenticate(identity IdentityVerifier, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		const prefix = "Bearer "
+		authorization := request.Header.Get("Authorization")
+		if identity == nil || !strings.HasPrefix(authorization, prefix) || len(authorization) == len(prefix) {
+			http.Error(response, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		trusted, err := identity.Verify(request.Context(), strings.TrimPrefix(authorization, prefix))
+		if err != nil {
+			http.Error(response, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(response, request.WithContext(context.WithValue(request.Context(), identityContextKey{}, trusted)))
+	})
+}
+
+func newMCPServer(deps Dependencies, securityContext SecurityContext) *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "agent-tool-guardrails",
 		Version: "v0.1.0",
@@ -79,7 +139,7 @@ func NewHandler(deps Dependencies) http.Handler {
 				return next(ctx, method, request)
 			}
 			decision, err := deps.Policy.Decide(ctx, PolicyInput{
-				SecurityContext: deps.SecurityContext,
+				SecurityContext: securityContext,
 				Operation:       discoverOperation,
 				Tool:            coffeeStationStatusTool,
 			})
@@ -95,7 +155,7 @@ func NewHandler(deps Dependencies) http.Handler {
 		Description: "Read the status of the demo coffee station.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input coffeeStationStatusInput) (*mcp.CallToolResult, CoffeeStationStatus, error) {
 		decision, err := deps.Policy.Decide(ctx, PolicyInput{
-			SecurityContext: deps.SecurityContext,
+			SecurityContext: securityContext,
 			Operation:       executeOperation,
 			Tool:            coffeeStationStatusTool,
 			Arguments:       input,
@@ -123,12 +183,11 @@ func NewHandler(deps Dependencies) http.Handler {
 		return result, status, nil
 	})
 
-	mux := http.NewServeMux()
-	mux.Handle("/mcp", mcp.NewStreamableHTTPHandler(
-		func(*http.Request) *mcp.Server { return server },
-		&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true},
-	))
-	mux.HandleFunc("GET /healthz", func(response http.ResponseWriter, request *http.Request) {
+	return server
+}
+
+func healthHandler(deps Dependencies) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
 		response.Header().Set("Content-Type", "application/json")
 		if err := deps.Policy.Health(request.Context()); err != nil {
 			response.WriteHeader(http.StatusServiceUnavailable)
@@ -152,6 +211,5 @@ func NewHandler(deps Dependencies) http.Handler {
 			"policy":   "ready",
 			"resource": "ready",
 		})
-	})
-	return mux
+	}
 }

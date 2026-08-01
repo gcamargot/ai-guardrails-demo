@@ -1,6 +1,6 @@
 # Agent Tool Guardrails
 
-Tracer-bullet implementation of a mandatory MCP Enforcement Boundary. A client calls the narrow `coffee_station.get_status` Tool; the Go gateway validates the request, obtains an OPA Policy Decision, calls an isolated simulated Protected Resource, validates the response, and returns structured MCP content with the OPA `decision_id` and policy revision.
+Tracer-bullet implementation of a mandatory MCP Enforcement Boundary. A client authenticates with Keycloak and calls the narrow `coffee_station.get_status` Tool; the Go gateway validates the signed identity, composes a Security Context, obtains an OPA Policy Decision, calls an isolated simulated Protected Resource, validates the response, and returns structured MCP content with the OPA `decision_id` and policy revision.
 
 ## Run
 
@@ -8,13 +8,20 @@ Tracer-bullet implementation of a mandatory MCP Enforcement Boundary. A client c
 ./scripts/smoke.sh
 ```
 
-The smoke path proves both outcomes:
+The smoke path proves these outcomes:
 
-- `owner` may read `demo-station` and receives `state: ready`.
-- The same Tool targeting `real-station` is denied before the coffee-station service is called.
-- A caller denied by policy receives an empty Tool catalog as well as execution denial.
+- A request without a Bearer token fails with `401` before OPA or the Protected Resource.
+- Keycloak issues signed tokens for `telegram-agent` and `coding-agent` with the same authenticated Subject and distinct Actors.
+- Both Actors may read `demo-station` and receive `state: ready` through policy revision `ticket-02`.
+- A forged Model Interpretation claiming another user, Actor or sensitive capability cannot alter the effective Security Context.
 
-The gateway is available at `http://localhost:8080/mcp`; readiness for both OPA and the Protected Resource is available at `http://localhost:8080/healthz`.
+The gateway is available at `http://localhost:8080/mcp`; readiness for both OPA and the Protected Resource is available at `http://localhost:8080/healthz`. Keycloak is imported from [`keycloak/agent-tools-realm.json`](keycloak/agent-tools-realm.json) and is only used inside the isolated Compose demo path.
+
+## Security Context composition
+
+The gateway accepts identity only from the Bearer token after OIDC discovery and verification of its signature, issuer, audience and expiry. It maps `sub` to Subject, `azp` to Actor, intersects the signed `scope` claim with configured Turn Capabilities, and adds the deployment-bound Channel. Missing claims or scopes fail closed.
+
+Model Interpretation may travel in MCP `_meta`, but that data is not copied into the Security Context or OPA input. Keycloak uses demo-only direct access grants and checked-in credentials so the scenario is reproducible; they are not production defaults or secrets.
 
 ## Test
 
@@ -33,4 +40,4 @@ docker run --rm \
   test /policies
 ```
 
-The current Security Context binds a fixed Subject, Actor, Channel and Turn Capability from deployment configuration. It is a trusted demo fixture shared by callers, not user authentication; OIDC-backed composed identity is deliberately deferred to ticket 02.
+The demo pins Keycloak `26.7.0`, OPA `1.17.0` and Go `1.25.7`. The smoke teardown removes all containers and networks after either success or failure.

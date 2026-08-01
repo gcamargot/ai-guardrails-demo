@@ -9,6 +9,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/nahtao97/agent-tool-guardrails/internal/coffeestationclient"
 	"github.com/nahtao97/agent-tool-guardrails/internal/gateway"
+	"golang.org/x/oauth2"
 )
 
 func TestGatewayReturnsStatusFromProtectedResource(t *testing.T) {
@@ -24,9 +25,12 @@ func TestGatewayReturnsStatusFromProtectedResource(t *testing.T) {
 	t.Cleanup(resourceServer.Close)
 
 	server := httptest.NewServer(gateway.NewHandler(gateway.Dependencies{
-		SecurityContext: gateway.SecurityContext{Subject: "owner"},
-		Policy:          allowPolicy{},
-		CoffeeStation:   coffeestationclient.New(resourceServer.URL, resourceServer.Client()),
+		Identity: gateway.IdentityVerifierFunc(func(context.Context, string) (gateway.TrustedIdentity, error) {
+			return gateway.TrustedIdentity{Subject: "owner-subject-id", Actor: "coding-agent", TurnCapabilities: []gateway.Capability{"coffee_station.read"}}, nil
+		}),
+		Channel:       "streamable-http",
+		Policy:        allowPolicy{},
+		CoffeeStation: coffeestationclient.New(resourceServer.URL, resourceServer.Client()),
 	}))
 	t.Cleanup(server.Close)
 
@@ -34,6 +38,9 @@ func TestGatewayReturnsStatusFromProtectedResource(t *testing.T) {
 	session, err := client.Connect(t.Context(), &mcp.StreamableClientTransport{
 		Endpoint:             server.URL + "/mcp",
 		DisableStandaloneSSE: true,
+		HTTPClient: oauth2.NewClient(t.Context(), oauth2.StaticTokenSource(&oauth2.Token{
+			AccessToken: "valid-token",
+		})),
 	}, nil)
 	if err != nil {
 		t.Fatalf("connect to MCP gateway: %v", err)

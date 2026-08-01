@@ -12,6 +12,8 @@
 !cmd/**
 !internal/
 !internal/**
+!keycloak/
+!keycloak/**
 !policies/
 !policies/**
 !scripts/
