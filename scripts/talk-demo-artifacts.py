@@ -22,11 +22,32 @@ DETAILS = {
     "outlook": {"content_trust": "untrusted", "derived_effect_count": 0},
     "codex": {"allowed_tool": "dev.read_repository", "smart_lock_discovered": False},
 }
-TOOLS = {
-    "exploit": "smart_lock.unlock",
-    "meeting": "calendar.submit_meeting_proposal",
-    "outlook": "outlook.read_message",
-    "codex": "smart_lock.unlock",
+INTERPRETATIONS = {
+    "exploit": {
+        "intent": "unlock the demo front door",
+        "tool": "smart_lock.unlock",
+        "arguments": {"device_id": "demo-front-door"},
+    },
+    "meeting": {
+        "intent": "propose a meeting",
+        "tool": "calendar.submit_meeting_proposal",
+        "arguments": {
+            "start": "2026-08-03T13:00:00Z",
+            "end": "2026-08-03T13:30:00Z",
+            "contact": "alice@example.invalid",
+            "reason": "Platform sync",
+        },
+    },
+    "outlook": {
+        "intent": "summarize one message",
+        "tool": "outlook.read_message",
+        "arguments": {"message_id": "demo-injection-message"},
+    },
+    "codex": {
+        "intent": "attempt a protected Tool Call",
+        "tool": "smart_lock.unlock",
+        "arguments": {"device_id": "demo-front-door"},
+    },
 }
 SCREENSHOTS = {
     "exploit": "01-exploit.svg",
@@ -112,11 +133,8 @@ def render_preloaded(root):
         interpretation = response["model_interpretation"]
         if not isinstance(response["model"], str) or not response["model"] or response["authority"] != "none":
             fail(f"preloaded response for {scenario} claims authority or lacks a model")
-        if not isinstance(interpretation, dict) or interpretation.get("tool") != TOOLS[scenario] or not isinstance(interpretation.get("intent"), str):
-            fail(f"preloaded response for {scenario} has an invalid Model Interpretation")
-        allowed_keys = {"intent", "tool", "arguments"}
-        if not set(interpretation).issubset(allowed_keys):
-            fail(f"preloaded response for {scenario} contains fields outside Model Interpretation")
+        if interpretation != INTERPRETATIONS[scenario]:
+            fail(f"preloaded response for {scenario} does not match its canonical Model Interpretation")
         additions[scenario] = {"model_response": response}
     render(results, "preloaded", "validated-preloaded-responses", additions)
 

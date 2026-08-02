@@ -51,6 +51,30 @@ if cd "$root_dir" && TALK_TEST_MODE=1 TALK_FALLBACK_DIR="$fixture_dir" ./scripts
 fi
 
 cp "$root_dir/docs/talk/fallback/preloaded-model-responses.jsonl" "$fixture_dir/preloaded-model-responses.jsonl"
+sed 's/unlock the demo front door/wrong intent/' "$fixture_dir/preloaded-model-responses.jsonl" > "$fixture_dir/preloaded.tmp"
+mv "$fixture_dir/preloaded.tmp" "$fixture_dir/preloaded-model-responses.jsonl"
+if cd "$root_dir" && TALK_TEST_MODE=1 TALK_FALLBACK_DIR="$fixture_dir" ./scripts/talk-demo.sh run --mode preloaded >/dev/null 2>&1; then
+  echo "incorrect preloaded intent unexpectedly passed" >&2
+  exit 1
+fi
+
+cp "$root_dir/docs/talk/fallback/preloaded-model-responses.jsonl" "$fixture_dir/preloaded-model-responses.jsonl"
+sed 's/,"arguments":{"device_id":"demo-front-door"}//' "$fixture_dir/preloaded-model-responses.jsonl" > "$fixture_dir/preloaded.tmp"
+mv "$fixture_dir/preloaded.tmp" "$fixture_dir/preloaded-model-responses.jsonl"
+if cd "$root_dir" && TALK_TEST_MODE=1 TALK_FALLBACK_DIR="$fixture_dir" ./scripts/talk-demo.sh run --mode preloaded >/dev/null 2>&1; then
+  echo "preloaded response without canonical arguments unexpectedly passed" >&2
+  exit 1
+fi
+
+cp "$root_dir/docs/talk/fallback/preloaded-model-responses.jsonl" "$fixture_dir/preloaded-model-responses.jsonl"
+sed 's/demo-front-door/garage-door/' "$fixture_dir/preloaded-model-responses.jsonl" > "$fixture_dir/preloaded.tmp"
+mv "$fixture_dir/preloaded.tmp" "$fixture_dir/preloaded-model-responses.jsonl"
+if cd "$root_dir" && TALK_TEST_MODE=1 TALK_FALLBACK_DIR="$fixture_dir" ./scripts/talk-demo.sh run --mode preloaded >/dev/null 2>&1; then
+  echo "preloaded response with incorrect canonical arguments unexpectedly passed" >&2
+  exit 1
+fi
+
+cp "$root_dir/docs/talk/fallback/preloaded-model-responses.jsonl" "$fixture_dir/preloaded-model-responses.jsonl"
 sed 's/fallback-exploit-correlation-01/uncorrelated-decision/' "$fixture_dir/01-exploit.svg" > "$fixture_dir/01-exploit.tmp"
 mv "$fixture_dir/01-exploit.tmp" "$fixture_dir/01-exploit.svg"
 if cd "$root_dir" && TALK_TEST_MODE=1 TALK_FALLBACK_DIR="$fixture_dir" ./scripts/talk-demo.sh run --mode evidence >/dev/null 2>&1; then
