@@ -23,7 +23,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("initialize smart-lock credential: %v", err)
 	}
-	server := &http.Server{Addr: ":8088", Handler: adaptertelemetry.NewHandler(smartlockserver.NewHandler(credential), os.Stdout), ReadHeaderTimeout: 5 * time.Second}
+	server := &http.Server{
+		Addr: ":8088", Handler: adaptertelemetry.NewHandler(
+			smartlockserver.NewDemoHandler(credential, envconfig.Must("DEMO_RESET_CREDENTIAL")), os.Stdout,
+		), ReadHeaderTimeout: 5 * time.Second,
+	}
 	log.Printf("isolated simulated smart lock listening on %s", server.Addr)
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatal(err)

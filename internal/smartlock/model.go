@@ -7,6 +7,7 @@ type StateName string
 const (
 	DemoDeviceID  DeviceID  = "demo-front-door"
 	UnlockTool              = "smart_lock.unlock"
+	StateLocked   StateName = "locked"
 	StateUnlocked StateName = "unlocked"
 )
 

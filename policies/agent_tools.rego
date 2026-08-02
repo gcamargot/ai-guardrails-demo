@@ -197,6 +197,11 @@ eligible_owner_smart_lock if {
 	input.tool == "smart_lock.unlock"
 }
 
+authorization := {"allow": false, "obligations": [], "reason": "smart_lock_owner_subject_required"} if {
+	input.tool == "smart_lock.unlock"
+	input.security_context.subject != "owner-subject-id"
+}
+
 authorization := {"allow": true, "obligations": ["exact_approval"], "reason": "owner_exact_smart_lock"} if {
 	eligible_owner_smart_lock
 	input.operation == "discover"

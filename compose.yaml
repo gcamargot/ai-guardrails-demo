@@ -190,6 +190,7 @@ services:
     build: .
     command: /app/smart-lock
     environment:
+      DEMO_RESET_CREDENTIAL: demo-reset-control-credential
       VAULT_TOKEN_FILE: /run/vault-token/smart-lock
       VAULT_URL: http://vault:8200
     depends_on:
@@ -239,6 +240,7 @@ services:
       OWNER_SUBJECT: owner-subject-id
     networks:
       - approval
+      - observability
     volumes:
       - approval-state:/state
     depends_on:
@@ -395,6 +397,64 @@ services:
       timeout: 1s
       retries: 15
 
+  insecure-smart-lock:
+    build: .
+    command: /app/insecure-smart-lock
+    environment:
+      DEMO_RESET_CREDENTIAL: demo-reset-control-credential
+      INSECURE_LOCK_CREDENTIAL: insecure-prompt-only-credential
+    networks:
+      - exploit
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8092/healthz"]
+      interval: 2s
+      timeout: 1s
+      retries: 15
+
+  replay-demo:
+    build: .
+    command: /app/replay-demo
+    environment:
+      APPROVAL_METRICS_URL: http://approval-authority:8086/metrics
+      AUDIT_RECORDS_URL: http://audit:8089/records
+      DEMO_RESET_CREDENTIAL: demo-reset-control-credential
+      EXTERNAL_PASSWORD: external-demo-password
+      EXTERNAL_USERNAME: external-alice
+      INSECURE_LOCK_CREDENTIAL: insecure-prompt-only-credential
+      INSECURE_LOCK_URL: http://insecure-smart-lock:8092
+      KEYCLOAK_TOKEN_URL: http://keycloak:8080/realms/agent-tools/protocol/openid-connect/token
+      OIDC_CLIENT_ID: telegram-agent
+      OIDC_CLIENT_SECRET: telegram-demo-secret
+      QWEN_URL: http://qwen:8085
+      SECURE_GATEWAY_MCP_URL: http://telegram-gateway:8080/mcp
+      SECURE_LOCK_METRICS_URL: http://smart-lock:8088/metrics
+      SECURE_LOCK_URL: http://smart-lock:8088
+    depends_on:
+      approval-authority:
+        condition: service_healthy
+      audit:
+        condition: service_healthy
+      insecure-smart-lock:
+        condition: service_healthy
+      qwen:
+        condition: service_healthy
+      smart-lock:
+        condition: service_healthy
+      telegram-gateway:
+        condition: service_healthy
+    networks:
+      - public
+      - identity
+      - model
+      - exploit
+      - audit
+      - observability
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8093/healthz"]
+      interval: 2s
+      timeout: 1s
+      retries: 15
+
   telegram-adapter:
     build: .
     command: /app/telegram-adapter
@@ -444,6 +504,7 @@ services:
       POLICY_VALID_UPDATE_URL: http://policy-bundle:8091/updates/valid
       CALENDAR_METRICS_URL: http://calendar:8083/metrics
       SMART_LOCK_METRICS_URL: http://smart-lock:8088/metrics
+      REPLAY_DEMO_URL: http://replay-demo:8093
       GATEWAY_MCP_URL: http://gateway:8080/mcp
       KEYCLOAK_TOKEN_URL: http://keycloak:8080/realms/agent-tools/protocol/openid-connect/token
       IDENTITY_FAULT_URL: http://oauth-facade:8082/test/identity
@@ -451,6 +512,8 @@ services:
       TELEGRAM_WEBHOOK_URL: http://telegram-adapter:8084/telegram/webhook
     depends_on:
       gateway:
+        condition: service_healthy
+      replay-demo:
         condition: service_healthy
       telegram-adapter:
         condition: service_healthy
@@ -537,6 +600,8 @@ networks:
   observability:
     internal: true
   audit:
+    internal: true
+  exploit:
     internal: true
 
 volumes:

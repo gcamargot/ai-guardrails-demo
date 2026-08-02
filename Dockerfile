@@ -15,6 +15,8 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/qwen-simulator ./c
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/approval-authority ./cmd/approval-authority
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/outlook ./cmd/outlook
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/smart-lock ./cmd/smart-lock
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/insecure-smart-lock ./cmd/insecure-smart-lock
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/replay-demo ./cmd/replay-demo
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/audit ./cmd/audit
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/development-repository ./cmd/development-repository
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/oauth-facade ./cmd/oauth-facade

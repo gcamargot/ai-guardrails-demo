@@ -37,10 +37,11 @@ type Config struct {
 }
 
 type authority struct {
-	config   Config
-	mu       sync.Mutex
-	used     map[string]struct{}
-	stateErr error
+	config       Config
+	mu           sync.Mutex
+	used         map[string]struct{}
+	stateErr     error
+	consumeCount int
 }
 
 type claims struct {
@@ -71,6 +72,12 @@ func NewHandler(config Config) http.Handler {
 			return
 		}
 		_, _ = response.Write([]byte(`{"status":"ready"}`))
+	})
+	mux.HandleFunc("GET /metrics", func(response http.ResponseWriter, _ *http.Request) {
+		service.mu.Lock()
+		defer service.mu.Unlock()
+		response.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(response).Encode(map[string]int{"consume_count": service.consumeCount})
 	})
 	mux.HandleFunc("POST /approvals/issue", service.authenticate(config.IssuerCredential, service.issue))
 	mux.HandleFunc("POST /approvals/consume", service.authenticate(config.ConsumerCredential, service.consume))
@@ -130,6 +137,9 @@ func (service *authority) issue(response http.ResponseWriter, request *http.Requ
 }
 
 func (service *authority) consume(response http.ResponseWriter, request *http.Request) {
+	service.mu.Lock()
+	service.consumeCount++
+	service.mu.Unlock()
 	if !service.stateAvailable() {
 		http.Error(response, "approval state unavailable", http.StatusServiceUnavailable)
 		return

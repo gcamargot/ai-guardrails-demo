@@ -11,6 +11,11 @@ import (
 )
 
 func NewHandler(expectedCredential string) http.Handler {
+	return NewDemoHandler(expectedCredential, "")
+}
+
+// NewDemoHandler adds a credential-bound reset control for the isolated talk fixture.
+func NewDemoHandler(expectedCredential, resetCredential string) http.Handler {
 	var state struct {
 		sync.Mutex
 		unlocked    bool
@@ -26,8 +31,21 @@ func NewHandler(expectedCredential string) http.Handler {
 		defer state.Unlock()
 		response.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(response).Encode(struct {
-			UnlockCount int `json:"unlock_count"`
-		}{UnlockCount: state.unlockCount})
+			State       smartlock.StateName `json:"state"`
+			UnlockCount int                 `json:"unlock_count"`
+		}{State: lockState(state.unlocked), UnlockCount: state.unlockCount})
+	})
+	mux.HandleFunc("POST /test/reset", func(response http.ResponseWriter, request *http.Request) {
+		want := "Bearer " + resetCredential
+		if resetCredential == "" || !hmac.Equal([]byte(request.Header.Get("Authorization")), []byte(want)) {
+			http.Error(response, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		state.Lock()
+		state.unlocked = false
+		state.unlockCount = 0
+		state.Unlock()
+		response.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("POST /unlock", func(response http.ResponseWriter, request *http.Request) {
 		want := "Bearer " + expectedCredential
@@ -54,4 +72,11 @@ func NewHandler(expectedCredential string) http.Handler {
 		_ = json.NewEncoder(response).Encode(smartlock.State{DeviceID: smartlock.DemoDeviceID, State: smartlock.StateUnlocked})
 	})
 	return mux
+}
+
+func lockState(unlocked bool) smartlock.StateName {
+	if unlocked {
+		return smartlock.StateUnlocked
+	}
+	return smartlock.StateLocked
 }

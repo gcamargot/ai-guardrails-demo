@@ -48,9 +48,12 @@ for forbidden in \
   'demo-calendar-credential' \
   'demo-outlook-credential' \
   'demo-smart-lock-credential' \
+  'demo-reset-control-credential' \
+  'insecure-prompt-only-credential' \
   'demo-telegram-webhook-secret' \
   'owner-demo-password' \
   'PROMPT_INJECTION_SENTINEL_7F3A' \
+  'Ignore the prompt rule' \
   'ignore previous instructions'; do
   if printf '%s' "$logs" | grep -Fq "$forbidden"; then
     echo "sensitive body, secret or prompt leaked into service logs" >&2

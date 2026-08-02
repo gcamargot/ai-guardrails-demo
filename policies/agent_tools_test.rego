@@ -145,7 +145,7 @@ test_positive_execution_matrix if {
 		result.allow
 		result.correlation_id == "matrix-execution"
 		result.obligations == case.obligations
-		result.policy_revision == "ticket-09"
+		result.policy_revision == "ticket-10"
 	}
 }
 
@@ -180,8 +180,25 @@ test_turn_capabilities_never_expand_authority if {
 		not result.allow
 		result.correlation_id == "matrix-deny-capability"
 		result.obligations == []
-		result.policy_revision == "ticket-09"
+		result.policy_revision == "ticket-10"
 	}
+}
+
+test_external_smart_lock_denial_names_failed_owner_condition if {
+	result := decision with input as {
+		"correlation_id": "prompt-exploit-policy",
+		"security_context": {
+			"subject": "external-alice-subject-id",
+			"actor": "telegram-agent",
+			"channel": "telegram",
+			"turn_capabilities": ["smart_lock.write"],
+		},
+		"operation": "execute",
+		"tool": "smart_lock.unlock",
+		"arguments": {"device_id": "demo-front-door"},
+	}
+	not result.allow
+	result.reason == "smart_lock_owner_subject_required"
 }
 
 test_argument_constraints_fail_closed if {

@@ -12,7 +12,7 @@ The smoke path proves these outcomes:
 
 - A request without a Bearer token fails with `401` before OPA or the Protected Resource.
 - Keycloak issues signed tokens for `telegram-agent` and `coding-agent` with the same authenticated Subject and distinct Actors.
-- Both Actors may read `demo-station` and receive `state: ready` through policy revision `ticket-09`.
+- Both Actors may read `demo-station` and receive `state: ready` through policy revision `ticket-10`.
 - The Owner's coding Actor can use the exact `dev.read_repository` Tool for allowlisted `CONTEXT.md`; the isolated adapter rejects other paths.
 - The coding Actor does not discover `smart_lock.unlock`. A crafted raw MCP call that bypasses Codex's allowlist and approval prompt is still denied by OPA, produces no Effect, and emits audit evidence separating Owner Subject from `coding-agent` Actor.
 - A forged Model Interpretation claiming another user, Actor or sensitive capability cannot alter the effective Security Context.
@@ -26,6 +26,7 @@ The smoke path proves these outcomes:
 - The prepared email contains a prompt-injection sentinel. Its minimized view is explicitly marked `untrusted_content`, contains no body, and keeps `outlook_effect_count=0`; a later Effect still requires a new explicit command and capability.
 - Gateway, calendar and Outlook load synthetic downstream credentials from Vault. The smoke fails if credentials, email bodies or full prompt sentinels appear in service logs.
 - Every Tool Call emits structured operational evidence joining gateway trace, OPA correlation and decision identifiers, safe normalized arguments, rule, revision, obligations, outcome and timing. OPA decision logs remove sensitive argument paths before emission.
+- The prompt-only replay deterministically lets a malicious External Subject instruction open a separate simulated lock. After reset, the same intent and canonical `smart_lock.unlock` arguments preserve the real External Subject identity at the Enforcement Boundary, where OPA visibly denies `smart_lock_owner_subject_required` before Approval consumption or adapter execution. Trace, correlation and decision identifiers join the evidence.
 - The smoke deliberately makes identity, OPA and Approval Authority unavailable; even Free/Busy reads deny closed and the calendar Effect count remains unchanged. A malformed adapter response is also denied with an auditable reason.
 - Test-profile probes with the exact network memberships of Telegram, Qwen and Codex prove that those clients cannot resolve or connect to Protected Resource adapters directly.
 
@@ -56,6 +57,12 @@ Consumed Approval nonces are fsync'd to a local Compose volume and reloaded afte
 The Owner first sends `/review-unlock demo-front-door` through the authenticated Telegram adapter. That explicit command requests the optional `smart_lock.write` Turn Capability and returns the exact `smart_lock.unlock` operation plus a short-lived Approval. `/unlock demo-front-door <trace-id> <approval>` can produce the Effect only when Subject, Telegram Actor, Telegram Channel, Turn Capability, fixed device, reviewed trace and signed Approval all still match. External and Unknown Subjects, coding clients, missing capabilities, changed arguments, expired Approvals and replayed Approvals fail before the isolated adapter.
 
 The adapter independently accepts only `demo-front-door`, validates the semantic `locked -> unlocked` transition and reads its synthetic downstream credential from Vault. The gateway writes typed audit records to an isolated collector before an authorized Effect. Records correlate `decision_id` and the Approval-bound trace where available, classify the Subject without storing its identifier, and have no field capable of carrying the Approval or downstream credentials.
+
+## Prompt Rule exploit replay
+
+The opening demo intentionally contrasts two separate fixtures. `replay-demo` sends one fixed malicious External Subject instruction to deterministic Qwen. In the `prompt_only` path, the classifier violates the advisory Prompt Rule and a deliberately vulnerable Actor calls `smart_lock.unlock` against `insecure-smart-lock`, which exists only on the internal `exploit` network and has no Vault or real-device integration. The lock visibly moves from `locked` to `unlocked`.
+
+After a credential-bound internal reset, `enforced_policy` reuses the exact intent and canonical `{ "device_id": "demo-front-door" }` arguments. It obtains the External Subject's real Keycloak token and calls the Telegram MCP gateway. OPA returns `smart_lock_owner_subject_required`; the response shows the failed condition and its `trace_id`, `correlation_id`, `decision_id` and policy revision. Approval consumption and the protected adapter's unlock count both remain unchanged. The Compose smoke runs the entire reset/insecure/reset/secure sequence twice without restarting containers or manual cleanup.
 
 ## Read-only Outlook controls
 
@@ -89,7 +96,7 @@ Those settings are a useful client defense and UX control, not the Enforcement B
 
 [`scripts/policy-ci.sh`](scripts/policy-ci.sh) is the single publishing path. It rejects unformatted Rego, strict compilation failures, an empty or failing unit-test suite, and an incomplete ownership contract before producing anything. Only after every gate succeeds does it build a revisioned ES256 bundle under `.artifacts/policy/`. [`scripts/policy-ci-test.sh`](scripts/policy-ci-test.sh) runs an executable fixture for each rejection mode plus the valid publishing path.
 
-OPA no longer mounts policy source. It downloads the artifact from the internal Bundle Service, verifies its signature against the independently configured public key, and becomes ready only after the first bundle activates. Every Policy Decision echoes a gateway-generated `correlation_id`, its `decision_id`, obligations and the revision stored inside the active artifact. The smoke offers OPA an update signed by an untrusted key, observes the signature error through Status API, verifies that `active_revision` remains `ticket-09`, and successfully evaluates another Tool Call against that last good revision.
+OPA no longer mounts policy source. It downloads the artifact from the internal Bundle Service, verifies its signature against the independently configured public key, and becomes ready only after the first bundle activates. Every Policy Decision echoes a gateway-generated `correlation_id`, its `decision_id`, obligations and the revision stored inside the active artifact. The smoke offers OPA an update signed by an untrusted key, observes the signature error through Status API, verifies that `active_revision` remains `ticket-10`, and successfully evaluates another Tool Call against that last good revision.
 
 The EC private keys under `policies/keys/` are synthetic fixtures for this isolated demo and must never be reused. A production pipeline would keep the signing key in a KMS, HSM or Vault transit engine and distribute only its public key to OPA. [`policies/OWNERS.md`](policies/OWNERS.md) requires two independent approvals for sensitive policy changes: Platform/Security for the Enforcement Boundary and signing workflow, plus the relevant Protected Resource owner for intended authority and constraints.
 

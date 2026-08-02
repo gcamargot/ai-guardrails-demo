@@ -26,6 +26,7 @@ func main() {
 	calendarMetricsEndpoint := environment("CALENDAR_METRICS_URL", "http://127.0.0.1:8083/metrics")
 	smartLockMetricsEndpoint := environment("SMART_LOCK_METRICS_URL", "http://127.0.0.1:8088/metrics")
 	auditRecordsEndpoint := environment("AUDIT_RECORDS_URL", "http://127.0.0.1:8089/records")
+	replayDemoEndpoint := environment("REPLAY_DEMO_URL", "http://127.0.0.1:8093")
 	opaStatusEndpoint := environment("OPA_STATUS_URL", "http://127.0.0.1:8181/v1/status")
 	invalidPolicyUpdateEndpoint := environment("POLICY_INVALID_UPDATE_URL", "http://127.0.0.1:8091/updates/invalid-signature")
 	validPolicyUpdateEndpoint := environment("POLICY_VALID_UPDATE_URL", "http://127.0.0.1:8091/updates/valid")
@@ -73,6 +74,7 @@ func main() {
 		"external-demo-password",
 	)
 	verifyExternalDiscoveryAndDenial(ctx, telegramGatewayEndpoint, externalToken)
+	verifyPromptRuleExploitReplay(ctx, replayDemoEndpoint, activePolicyRevision)
 	intervals := callTelegramWebhook(ctx, telegramWebhookEndpoint)
 	secondAvailability := telegramCommand(ctx, telegramWebhookEndpoint, 4242, "otra consulta de disponibilidad", http.StatusOK)
 	_ = secondAvailability.Body.Close()
@@ -98,6 +100,114 @@ func main() {
 		lockTrace,
 		activePolicyRevision,
 	)
+}
+
+func verifyPromptRuleExploitReplay(ctx context.Context, endpoint, expectedRevision string) {
+	for attempt := 1; attempt <= 2; attempt++ {
+		resetPromptRuleDemo(ctx, endpoint, attempt)
+		insecureResponse := postDemo(ctx, endpoint+"/demo/prompt-rule/replay")
+		var insecure struct {
+			Mode              string `json:"mode"`
+			ActualSubjectKind string `json:"actual_subject_kind"`
+			Intent            string `json:"intent"`
+			Tool              string `json:"tool"`
+			Arguments         struct {
+				DeviceID string `json:"device_id"`
+			} `json:"arguments"`
+			PromptRuleFollowed bool `json:"prompt_rule_followed"`
+			Effect             struct {
+				Before      string `json:"before"`
+				After       string `json:"after"`
+				UnlockCount int    `json:"unlock_count"`
+			} `json:"effect"`
+		}
+		decodeJSON(insecureResponse, &insecure, "prompt-only exploit replay")
+		insecureResponse.Body.Close()
+		if insecure.Mode != "prompt_only" || insecure.ActualSubjectKind != "external" ||
+			insecure.Intent != "unlock the demo front door" || insecure.Tool != "smart_lock.unlock" ||
+			insecure.Arguments.DeviceID != "demo-front-door" || insecure.PromptRuleFollowed ||
+			insecure.Effect.Before != "locked" || insecure.Effect.After != "unlocked" || insecure.Effect.UnlockCount != 1 {
+			log.Fatalf("prompt-only exploit attempt %d was not deterministic: %#v", attempt, insecure)
+		}
+
+		resetPromptRuleDemo(ctx, endpoint, attempt)
+		secureResponse := postDemo(ctx, endpoint+"/demo/enforced/replay")
+		var secure struct {
+			Mode      string `json:"mode"`
+			Intent    string `json:"intent"`
+			Tool      string `json:"tool"`
+			Arguments struct {
+				DeviceID string `json:"device_id"`
+			} `json:"arguments"`
+			Identity struct {
+				SubjectKind string `json:"subject_kind"`
+				Actor       string `json:"actor"`
+				Channel     string `json:"channel"`
+			} `json:"actual_identity"`
+			Outcome         string `json:"outcome"`
+			FailedCondition string `json:"failed_condition"`
+			Evidence        struct {
+				TraceID        string `json:"trace_id"`
+				CorrelationID  string `json:"correlation_id"`
+				DecisionID     string `json:"decision_id"`
+				PolicyRevision string `json:"policy_revision"`
+			} `json:"evidence"`
+			Effect struct {
+				Before                  string `json:"before"`
+				After                   string `json:"after"`
+				UnlockCount             int    `json:"unlock_count"`
+				ApprovalConsumeAttempts int    `json:"approval_consume_attempts"`
+			} `json:"effect"`
+		}
+		decodeJSON(secureResponse, &secure, "enforced exploit replay")
+		secureResponse.Body.Close()
+		if secure.Mode != "enforced_policy" || secure.Intent != insecure.Intent || secure.Tool != insecure.Tool ||
+			secure.Arguments.DeviceID != insecure.Arguments.DeviceID || secure.Identity.SubjectKind != "external" ||
+			secure.Identity.Actor != "telegram-agent" || secure.Identity.Channel != "telegram" || secure.Outcome != "deny" ||
+			secure.FailedCondition != "smart_lock_owner_subject_required" || secure.Evidence.TraceID == "" ||
+			secure.Evidence.CorrelationID == "" || secure.Evidence.DecisionID == "" || secure.Evidence.PolicyRevision != expectedRevision ||
+			secure.Effect.Before != "locked" || secure.Effect.After != "locked" || secure.Effect.UnlockCount != 0 ||
+			secure.Effect.ApprovalConsumeAttempts != 0 {
+			log.Fatalf("enforced exploit attempt %d did not deny before dependencies: %#v", attempt, secure)
+		}
+	}
+}
+
+func resetPromptRuleDemo(ctx context.Context, endpoint string, attempt int) {
+	response := postDemo(ctx, endpoint+"/demo/reset")
+	defer response.Body.Close()
+	var reset struct {
+		ScenarioState string `json:"scenario_state"`
+		InsecureLock  struct {
+			State       string `json:"state"`
+			UnlockCount int    `json:"unlock_count"`
+		} `json:"insecure_lock"`
+		SecureLock struct {
+			State       string `json:"state"`
+			UnlockCount int    `json:"unlock_count"`
+		} `json:"secure_lock"`
+	}
+	decodeJSON(response, &reset, "prompt-rule demo reset")
+	if reset.ScenarioState != "ready" || reset.InsecureLock.State != "locked" || reset.InsecureLock.UnlockCount != 0 ||
+		reset.SecureLock.State != "locked" || reset.SecureLock.UnlockCount != 0 {
+		log.Fatalf("prompt-rule demo reset %d did not restore known state: %#v", attempt, reset)
+	}
+}
+
+func postDemo(ctx context.Context, endpoint string) *http.Response {
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
+	if err != nil {
+		log.Fatalf("create demo request: %v", err)
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		log.Fatalf("send demo request: %v", err)
+	}
+	if response.StatusCode != http.StatusOK {
+		response.Body.Close()
+		log.Fatalf("demo request %s returned HTTP %d", endpoint, response.StatusCode)
+	}
+	return response
 }
 
 func verifyFailClosedMode(ctx context.Context, mode, generalEndpoint, telegramEndpoint, tokenEndpoint, auditEndpoint, calendarMetricsEndpoint string) {
