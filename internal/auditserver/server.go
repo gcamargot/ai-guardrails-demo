@@ -1,6 +1,7 @@
 package auditserver
 
 import (
+	"crypto/hmac"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -10,6 +11,10 @@ import (
 )
 
 func NewHandler() http.Handler {
+	return NewDemoHandler("")
+}
+
+func NewDemoHandler(resetCredential string) http.Handler {
 	var state struct {
 		sync.Mutex
 		records []gateway.AuditRecord
@@ -37,6 +42,17 @@ func NewHandler() http.Handler {
 		defer state.Unlock()
 		response.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(response).Encode(state.records)
+	})
+	mux.HandleFunc("POST /test/reset", func(response http.ResponseWriter, request *http.Request) {
+		want := "Bearer " + resetCredential
+		if resetCredential == "" || !hmac.Equal([]byte(request.Header.Get("Authorization")), []byte(want)) {
+			http.Error(response, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		state.Lock()
+		state.records = nil
+		state.Unlock()
+		response.WriteHeader(http.StatusNoContent)
 	})
 	return mux
 }

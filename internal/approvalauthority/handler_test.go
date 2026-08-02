@@ -156,6 +156,29 @@ func TestApprovalConsumptionFailsClosedWhenReplayStateCannotLoad(t *testing.T) {
 	}
 }
 
+func TestDemoMetricsResetRequiresCredentialAndDoesNotTouchApprovalState(t *testing.T) {
+	server := httptest.NewServer(approvalauthority.NewHandler(approvalauthority.Config{
+		SigningKey: []byte("test-signing-key-with-at-least-32-bytes"), IssuerCredential: "issuer",
+		ConsumerCredential: "consumer", OwnerSubject: "owner-subject-id", StateFile: t.TempDir() + "/nonces",
+		DemoResetCredential: "reset-credential",
+	}))
+	t.Cleanup(server.Close)
+	invalid := postJSONWithCredential(t, server.URL+"/approvals/consume", map[string]any{}, "consumer")
+	invalid.Body.Close()
+	if count := approvalConsumeCount(t, server.URL); count != 1 {
+		t.Fatalf("consume_count before reset = %d, want 1", count)
+	}
+	if status := resetApprovalMetrics(t, server.URL, "wrong"); status != http.StatusUnauthorized {
+		t.Fatalf("untrusted metrics reset status = %d, want %d", status, http.StatusUnauthorized)
+	}
+	if status := resetApprovalMetrics(t, server.URL, "reset-credential"); status != http.StatusNoContent {
+		t.Fatalf("metrics reset status = %d, want %d", status, http.StatusNoContent)
+	}
+	if count := approvalConsumeCount(t, server.URL); count != 0 {
+		t.Fatalf("consume_count after reset = %d, want 0", count)
+	}
+}
+
 func exactBinding() approvalauthority.Binding {
 	return approvalauthority.Binding{
 		Subject: "owner-subject-id",
@@ -215,4 +238,35 @@ func postJSONWithCredential(t *testing.T, url string, value any, credential stri
 		t.Fatalf("send request: %v", err)
 	}
 	return response
+}
+
+func approvalConsumeCount(t *testing.T, baseURL string) int {
+	t.Helper()
+	response, err := http.Get(baseURL + "/metrics")
+	if err != nil {
+		t.Fatalf("read Approval metrics: %v", err)
+	}
+	defer response.Body.Close()
+	var metrics struct {
+		ConsumeCount int `json:"consume_count"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&metrics); err != nil {
+		t.Fatalf("decode Approval metrics: %v", err)
+	}
+	return metrics.ConsumeCount
+}
+
+func resetApprovalMetrics(t *testing.T, baseURL, credential string) int {
+	t.Helper()
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, baseURL+"/test/reset-metrics", nil)
+	if err != nil {
+		t.Fatalf("create Approval metrics reset: %v", err)
+	}
+	request.Header.Set("Authorization", "Bearer "+credential)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("reset Approval metrics: %v", err)
+	}
+	defer response.Body.Close()
+	return response.StatusCode
 }

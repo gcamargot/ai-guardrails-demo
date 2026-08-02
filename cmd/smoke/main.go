@@ -27,6 +27,9 @@ func main() {
 	smartLockMetricsEndpoint := environment("SMART_LOCK_METRICS_URL", "http://127.0.0.1:8088/metrics")
 	auditRecordsEndpoint := environment("AUDIT_RECORDS_URL", "http://127.0.0.1:8089/records")
 	replayDemoEndpoint := environment("REPLAY_DEMO_URL", "http://127.0.0.1:8093")
+	demoControlEndpoint := environment("DEMO_CONTROL_URL", "http://127.0.0.1:8094")
+	demoResetCredential := environment("DEMO_RESET_CREDENTIAL", "demo-reset-control-credential")
+	approvalMetricsEndpoint := environment("APPROVAL_METRICS_URL", "http://127.0.0.1:8086/metrics")
 	opaStatusEndpoint := environment("OPA_STATUS_URL", "http://127.0.0.1:8181/v1/status")
 	invalidPolicyUpdateEndpoint := environment("POLICY_INVALID_UPDATE_URL", "http://127.0.0.1:8091/updates/invalid-signature")
 	validPolicyUpdateEndpoint := environment("POLICY_VALID_UPDATE_URL", "http://127.0.0.1:8091/updates/valid")
@@ -74,7 +77,10 @@ func main() {
 		"external-demo-password",
 	)
 	verifyExternalDiscoveryAndDenial(ctx, telegramGatewayEndpoint, externalToken)
-	verifyPromptRuleExploitReplay(ctx, replayDemoEndpoint, activePolicyRevision)
+	verifyPromptRuleExploitReplay(
+		ctx, replayDemoEndpoint, demoControlEndpoint, demoResetCredential,
+		smartLockMetricsEndpoint, approvalMetricsEndpoint, activePolicyRevision,
+	)
 	intervals := callTelegramWebhook(ctx, telegramWebhookEndpoint)
 	secondAvailability := telegramCommand(ctx, telegramWebhookEndpoint, 4242, "otra consulta de disponibilidad", http.StatusOK)
 	_ = secondAvailability.Body.Close()
@@ -102,10 +108,13 @@ func main() {
 	)
 }
 
-func verifyPromptRuleExploitReplay(ctx context.Context, endpoint, expectedRevision string) {
+func verifyPromptRuleExploitReplay(
+	ctx context.Context,
+	replayEndpoint, controlEndpoint, resetCredential, smartLockMetricsEndpoint, approvalMetricsEndpoint, expectedRevision string,
+) {
 	for attempt := 1; attempt <= 2; attempt++ {
-		resetPromptRuleDemo(ctx, endpoint, attempt)
-		insecureResponse := postDemo(ctx, endpoint+"/demo/prompt-rule/replay")
+		resetPromptRuleDemo(ctx, controlEndpoint, resetCredential, attempt)
+		insecureResponse := postDemo(ctx, replayEndpoint+"/demo/prompt-rule/replay")
 		var insecure struct {
 			Mode              string `json:"mode"`
 			ActualSubjectKind string `json:"actual_subject_kind"`
@@ -122,7 +131,6 @@ func verifyPromptRuleExploitReplay(ctx context.Context, endpoint, expectedRevisi
 			} `json:"effect"`
 		}
 		decodeJSON(insecureResponse, &insecure, "prompt-only exploit replay")
-		insecureResponse.Body.Close()
 		if insecure.Mode != "prompt_only" || insecure.ActualSubjectKind != "external" ||
 			insecure.Intent != "unlock the demo front door" || insecure.Tool != "smart_lock.unlock" ||
 			insecure.Arguments.DeviceID != "demo-front-door" || insecure.PromptRuleFollowed ||
@@ -130,8 +138,10 @@ func verifyPromptRuleExploitReplay(ctx context.Context, endpoint, expectedRevisi
 			log.Fatalf("prompt-only exploit attempt %d was not deterministic: %#v", attempt, insecure)
 		}
 
-		resetPromptRuleDemo(ctx, endpoint, attempt)
-		secureResponse := postDemo(ctx, endpoint+"/demo/enforced/replay")
+		resetPromptRuleDemo(ctx, controlEndpoint, resetCredential, attempt)
+		beforeLock := readSmartLockMetrics(ctx, smartLockMetricsEndpoint)
+		beforeApprovals := approvalConsumeCount(ctx, approvalMetricsEndpoint)
+		secureResponse := postDemo(ctx, replayEndpoint+"/demo/enforced/replay")
 		var secure struct {
 			Mode      string `json:"mode"`
 			Intent    string `json:"intent"`
@@ -152,30 +162,24 @@ func verifyPromptRuleExploitReplay(ctx context.Context, endpoint, expectedRevisi
 				DecisionID     string `json:"decision_id"`
 				PolicyRevision string `json:"policy_revision"`
 			} `json:"evidence"`
-			Effect struct {
-				Before                  string `json:"before"`
-				After                   string `json:"after"`
-				UnlockCount             int    `json:"unlock_count"`
-				ApprovalConsumeAttempts int    `json:"approval_consume_attempts"`
-			} `json:"effect"`
 		}
 		decodeJSON(secureResponse, &secure, "enforced exploit replay")
-		secureResponse.Body.Close()
+		afterLock := readSmartLockMetrics(ctx, smartLockMetricsEndpoint)
+		afterApprovals := approvalConsumeCount(ctx, approvalMetricsEndpoint)
 		if secure.Mode != "enforced_policy" || secure.Intent != insecure.Intent || secure.Tool != insecure.Tool ||
 			secure.Arguments.DeviceID != insecure.Arguments.DeviceID || secure.Identity.SubjectKind != "external" ||
 			secure.Identity.Actor != "telegram-agent" || secure.Identity.Channel != "telegram" || secure.Outcome != "deny" ||
 			secure.FailedCondition != "smart_lock_owner_subject_required" || secure.Evidence.TraceID == "" ||
 			secure.Evidence.CorrelationID == "" || secure.Evidence.DecisionID == "" || secure.Evidence.PolicyRevision != expectedRevision ||
-			secure.Effect.Before != "locked" || secure.Effect.After != "locked" || secure.Effect.UnlockCount != 0 ||
-			secure.Effect.ApprovalConsumeAttempts != 0 {
+			beforeLock.State != "locked" || afterLock != beforeLock || afterApprovals != beforeApprovals {
 			log.Fatalf("enforced exploit attempt %d did not deny before dependencies: %#v", attempt, secure)
 		}
 	}
+	resetPromptRuleDemo(ctx, controlEndpoint, resetCredential, 3)
 }
 
-func resetPromptRuleDemo(ctx context.Context, endpoint string, attempt int) {
-	response := postDemo(ctx, endpoint+"/demo/reset")
-	defer response.Body.Close()
+func resetPromptRuleDemo(ctx context.Context, endpoint, credential string, attempt int) {
+	response := postDemoAuthenticated(ctx, endpoint+"/demo/reset", credential)
 	var reset struct {
 		ScenarioState string `json:"scenario_state"`
 		InsecureLock  struct {
@@ -186,18 +190,30 @@ func resetPromptRuleDemo(ctx context.Context, endpoint string, attempt int) {
 			State       string `json:"state"`
 			UnlockCount int    `json:"unlock_count"`
 		} `json:"secure_lock"`
+		Evidence struct {
+			AuditRecordCount     int `json:"audit_record_count"`
+			ApprovalConsumeCount int `json:"approval_consume_count"`
+		} `json:"evidence"`
 	}
 	decodeJSON(response, &reset, "prompt-rule demo reset")
 	if reset.ScenarioState != "ready" || reset.InsecureLock.State != "locked" || reset.InsecureLock.UnlockCount != 0 ||
-		reset.SecureLock.State != "locked" || reset.SecureLock.UnlockCount != 0 {
+		reset.SecureLock.State != "locked" || reset.SecureLock.UnlockCount != 0 ||
+		reset.Evidence.AuditRecordCount != 0 || reset.Evidence.ApprovalConsumeCount != 0 {
 		log.Fatalf("prompt-rule demo reset %d did not restore known state: %#v", attempt, reset)
 	}
 }
 
 func postDemo(ctx context.Context, endpoint string) *http.Response {
+	return postDemoAuthenticated(ctx, endpoint, "")
+}
+
+func postDemoAuthenticated(ctx context.Context, endpoint, credential string) *http.Response {
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
 	if err != nil {
 		log.Fatalf("create demo request: %v", err)
+	}
+	if credential != "" {
+		request.Header.Set("Authorization", "Bearer "+credential)
 	}
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
@@ -208,6 +224,41 @@ func postDemo(ctx context.Context, endpoint string) *http.Response {
 		log.Fatalf("demo request %s returned HTTP %d", endpoint, response.StatusCode)
 	}
 	return response
+}
+
+type smartLockMetrics struct {
+	State       string `json:"state"`
+	UnlockCount int    `json:"unlock_count"`
+}
+
+func readSmartLockMetrics(ctx context.Context, endpoint string) smartLockMetrics {
+	request, _ := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		log.Fatalf("read smart-lock metrics: %v", err)
+	}
+	defer response.Body.Close()
+	var metrics smartLockMetrics
+	if response.StatusCode != http.StatusOK || json.NewDecoder(response.Body).Decode(&metrics) != nil {
+		log.Fatalf("smart-lock metrics returned HTTP %d", response.StatusCode)
+	}
+	return metrics
+}
+
+func approvalConsumeCount(ctx context.Context, endpoint string) int {
+	request, _ := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		log.Fatalf("read Approval metrics: %v", err)
+	}
+	defer response.Body.Close()
+	var metrics struct {
+		ConsumeCount int `json:"consume_count"`
+	}
+	if response.StatusCode != http.StatusOK || json.NewDecoder(response.Body).Decode(&metrics) != nil {
+		log.Fatalf("Approval metrics returned HTTP %d", response.StatusCode)
+	}
+	return metrics.ConsumeCount
 }
 
 func verifyFailClosedMode(ctx context.Context, mode, generalEndpoint, telegramEndpoint, tokenEndpoint, auditEndpoint, calendarMetricsEndpoint string) {
@@ -402,19 +453,7 @@ func verifySmartLockAccess(ctx context.Context, endpoint, token string, wantDisc
 }
 
 func smartLockUnlockCount(ctx context.Context, endpoint string) int {
-	request, _ := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		log.Fatalf("read smart-lock metrics: %v", err)
-	}
-	defer response.Body.Close()
-	var metrics struct {
-		UnlockCount int `json:"unlock_count"`
-	}
-	if response.StatusCode != http.StatusOK || json.NewDecoder(response.Body).Decode(&metrics) != nil {
-		log.Fatalf("smart-lock metrics returned HTTP %d", response.StatusCode)
-	}
-	return metrics.UnlockCount
+	return readSmartLockMetrics(ctx, endpoint).UnlockCount
 }
 
 func verifySmartLockAudit(ctx context.Context, endpoint, traceID, approval string) {

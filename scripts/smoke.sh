@@ -13,6 +13,7 @@ docker compose --profile test run --build --rm smoke
 docker compose --profile test run --rm telegram-network-probe
 docker compose --profile test run --rm qwen-network-probe
 docker compose --profile test run --rm codex-network-probe
+docker compose --profile test run --rm replay-network-probe
 
 docker compose --profile test run --no-deps --rm -e FAILURE_MODE=malformed-input smoke
 docker compose exec -T coffee-station wget -q --post-data='' -O /dev/null http://127.0.0.1:8081/test/output/malformed

@@ -24,8 +24,6 @@ type Config struct {
 	QwenURL                string
 	InsecureLockURL        string
 	InsecureLockCredential string
-	SecureLockURL          string
-	ResetCredential        string
 	SecureGatewayURL       string
 	TokenEndpoint          string
 	OIDCClientID           string
@@ -33,8 +31,6 @@ type Config struct {
 	ExternalUsername       string
 	ExternalPassword       string
 	AuditRecordsURL        string
-	ApprovalMetricsURL     string
-	SecureLockMetricsURL   string
 	HTTPClient             *http.Client
 }
 
@@ -70,7 +66,6 @@ type enforcedReplayResult struct {
 	Outcome         string              `json:"outcome"`
 	FailedCondition string              `json:"failed_condition"`
 	Evidence        evidence            `json:"evidence"`
-	Effect          enforcedEffect      `json:"effect"`
 }
 
 type actualIdentity struct {
@@ -84,28 +79,6 @@ type evidence struct {
 	CorrelationID  gateway.CorrelationID `json:"correlation_id"`
 	DecisionID     string                `json:"decision_id"`
 	PolicyRevision string                `json:"policy_revision"`
-}
-
-type enforcedEffect struct {
-	Before                  smartlock.StateName `json:"before"`
-	After                   smartlock.StateName `json:"after"`
-	UnlockCount             int                 `json:"unlock_count"`
-	ApprovalConsumeAttempts int                 `json:"approval_consume_attempts"`
-}
-
-type lockMetrics struct {
-	State       smartlock.StateName `json:"state"`
-	UnlockCount int                 `json:"unlock_count"`
-}
-
-type approvalMetrics struct {
-	ConsumeCount int `json:"consume_count"`
-}
-
-type resetResult struct {
-	ScenarioState string      `json:"scenario_state"`
-	InsecureLock  lockMetrics `json:"insecure_lock"`
-	SecureLock    lockMetrics `json:"secure_lock"`
 }
 
 func NewHandler(config Config) http.Handler {
@@ -123,8 +96,7 @@ func NewHandler(config Config) http.Handler {
 			http.Error(response, "prompt-only replay unavailable", http.StatusBadGateway)
 			return
 		}
-		if classified.Intent != "unlock the demo front door" || classified.Tool != smartlock.UnlockTool ||
-			classified.Arguments.DeviceID != smartlock.DemoDeviceID || classified.PromptRuleFollowed {
+		if !validInterpretation(classified) || classified.PromptRuleFollowed {
 			http.Error(response, "invalid Model Interpretation", http.StatusBadGateway)
 			return
 		}
@@ -155,38 +127,7 @@ func NewHandler(config Config) http.Handler {
 		response.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(response).Encode(result)
 	})
-	mux.HandleFunc("POST /demo/reset", func(response http.ResponseWriter, request *http.Request) {
-		insecure, err := resetLock(request.Context(), config.HTTPClient, config.InsecureLockURL, config.ResetCredential)
-		if err != nil {
-			http.Error(response, "insecure demo reset unavailable", http.StatusBadGateway)
-			return
-		}
-		secure, err := resetLock(request.Context(), config.HTTPClient, config.SecureLockURL, config.ResetCredential)
-		if err != nil {
-			http.Error(response, "secure demo reset unavailable", http.StatusBadGateway)
-			return
-		}
-		response.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(response).Encode(resetResult{ScenarioState: "ready", InsecureLock: insecure, SecureLock: secure})
-	})
 	return mux
-}
-
-func resetLock(ctx context.Context, client *http.Client, baseURL, credential string) (lockMetrics, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(baseURL, "/")+"/test/reset", nil)
-	if err != nil {
-		return lockMetrics{}, err
-	}
-	request.Header.Set("Authorization", "Bearer "+credential)
-	response, err := client.Do(request)
-	if err != nil {
-		return lockMetrics{}, err
-	}
-	response.Body.Close()
-	if response.StatusCode != http.StatusNoContent {
-		return lockMetrics{}, fmt.Errorf("reset returned HTTP %d", response.StatusCode)
-	}
-	return readJSON[lockMetrics](ctx, client, strings.TrimRight(baseURL, "/")+"/metrics")
 }
 
 func enforcedReplay(ctx context.Context, config Config) (enforcedReplayResult, error) {
@@ -194,17 +135,8 @@ func enforcedReplay(ctx context.Context, config Config) (enforcedReplayResult, e
 	if err != nil {
 		return enforcedReplayResult{}, err
 	}
-	if classified.Intent != "unlock the demo front door" || classified.Tool != smartlock.UnlockTool ||
-		classified.Arguments.DeviceID != smartlock.DemoDeviceID {
+	if !validInterpretation(classified) {
 		return enforcedReplayResult{}, errors.New("invalid Model Interpretation")
-	}
-	beforeLock, err := readJSON[lockMetrics](ctx, config.HTTPClient, config.SecureLockMetricsURL)
-	if err != nil {
-		return enforcedReplayResult{}, err
-	}
-	beforeApprovals, err := readJSON[approvalMetrics](ctx, config.HTTPClient, config.ApprovalMetricsURL)
-	if err != nil {
-		return enforcedReplayResult{}, err
 	}
 	token, err := (oidcclient.Client{
 		Endpoint: config.TokenEndpoint, ClientID: config.OIDCClientID, ClientSecret: config.OIDCClientSecret, HTTPClient: config.HTTPClient,
@@ -244,14 +176,6 @@ func enforcedReplay(ctx context.Context, config Config) (enforcedReplayResult, e
 	if err != nil {
 		return enforcedReplayResult{}, err
 	}
-	afterLock, err := readJSON[lockMetrics](ctx, config.HTTPClient, config.SecureLockMetricsURL)
-	if err != nil {
-		return enforcedReplayResult{}, err
-	}
-	afterApprovals, err := readJSON[approvalMetrics](ctx, config.HTTPClient, config.ApprovalMetricsURL)
-	if err != nil {
-		return enforcedReplayResult{}, err
-	}
 	return enforcedReplayResult{
 		Mode: "enforced_policy", Intent: classified.Intent, Tool: classified.Tool, Arguments: classified.Arguments,
 		ActualIdentity: actualIdentity{SubjectKind: record.SubjectKind, Actor: record.Actor, Channel: record.Channel},
@@ -260,11 +184,12 @@ func enforcedReplay(ctx context.Context, config Config) (enforcedReplayResult, e
 			TraceID: record.TraceID, CorrelationID: record.CorrelationID, DecisionID: record.DecisionID,
 			PolicyRevision: record.PolicyRevision,
 		},
-		Effect: enforcedEffect{
-			Before: beforeLock.State, After: afterLock.State, UnlockCount: afterLock.UnlockCount - beforeLock.UnlockCount,
-			ApprovalConsumeAttempts: afterApprovals.ConsumeCount - beforeApprovals.ConsumeCount,
-		},
 	}, nil
+}
+
+func validInterpretation(value interpretation) bool {
+	return value.Intent == "unlock the demo front door" && value.Tool == smartlock.UnlockTool &&
+		value.Arguments.DeviceID == smartlock.DemoDeviceID
 }
 
 func auditEvidence(ctx context.Context, config Config, correlationID gateway.CorrelationID) (gateway.AuditRecord, error) {

@@ -27,13 +27,14 @@ type Binding struct {
 }
 
 type Config struct {
-	SigningKey         []byte
-	IssuerCredential   string
-	ConsumerCredential string
-	OwnerSubject       string
-	TTL                time.Duration
-	Now                func() time.Time
-	StateFile          string
+	SigningKey          []byte
+	IssuerCredential    string
+	ConsumerCredential  string
+	OwnerSubject        string
+	TTL                 time.Duration
+	Now                 func() time.Time
+	StateFile           string
+	DemoResetCredential string
 }
 
 type authority struct {
@@ -79,6 +80,12 @@ func NewHandler(config Config) http.Handler {
 		response.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(response).Encode(map[string]int{"consume_count": service.consumeCount})
 	})
+	mux.HandleFunc("POST /test/reset-metrics", service.authenticate(config.DemoResetCredential, func(response http.ResponseWriter, _ *http.Request) {
+		service.mu.Lock()
+		service.consumeCount = 0
+		service.mu.Unlock()
+		response.WriteHeader(http.StatusNoContent)
+	}))
 	mux.HandleFunc("POST /approvals/issue", service.authenticate(config.IssuerCredential, service.issue))
 	mux.HandleFunc("POST /approvals/consume", service.authenticate(config.ConsumerCredential, service.consume))
 	return mux

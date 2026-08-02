@@ -1,7 +1,6 @@
 package replaydemo_test
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -18,15 +17,7 @@ import (
 )
 
 func TestPromptRuleReplayDeterministicallyOpensOnlyTheIsolatedDemoLock(t *testing.T) {
-	qwen := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		if request.Method != http.MethodPost || request.URL.Path != "/classify/prompt-rule-exploit" {
-			http.NotFound(response, request)
-			return
-		}
-		response.Header().Set("Content-Type", "application/json")
-		_, _ = response.Write([]byte(`{"intent":"unlock the demo front door","tool":"smart_lock.unlock","arguments":{"device_id":"demo-front-door"},"prompt_rule_followed":false}`))
-	}))
-	t.Cleanup(qwen.Close)
+	qwen := exploitQwen(t)
 	insecureLock := httptest.NewServer(smartlockserver.NewHandler("insecure-demo-credential"))
 	t.Cleanup(insecureLock.Close)
 	demo := httptest.NewServer(replaydemo.NewHandler(replaydemo.Config{
@@ -105,8 +96,7 @@ func TestEnforcedReplayPreservesExternalIdentityAndDeniesBeforeDependencies(t *t
 		QwenURL: qwen.URL, SecureGatewayURL: gatewayServer.URL + "/mcp", TokenEndpoint: tokenEndpoint.URL,
 		OIDCClientID: "telegram-agent", OIDCClientSecret: "telegram-secret",
 		ExternalUsername: "external-alice", ExternalPassword: "external-password",
-		AuditRecordsURL: audit.URL + "/records", ApprovalMetricsURL: approvalMetrics.URL + "/metrics",
-		SecureLockMetricsURL: secureLockMetrics.URL + "/metrics", HTTPClient: http.DefaultClient,
+		AuditRecordsURL: audit.URL + "/records", HTTPClient: http.DefaultClient,
 	}))
 	t.Cleanup(demo.Close)
 
@@ -135,12 +125,6 @@ func TestEnforcedReplayPreservesExternalIdentityAndDeniesBeforeDependencies(t *t
 			DecisionID     string `json:"decision_id"`
 			PolicyRevision string `json:"policy_revision"`
 		} `json:"evidence"`
-		Effect struct {
-			Before                  string `json:"before"`
-			After                   string `json:"after"`
-			UnlockCount             int    `json:"unlock_count"`
-			ApprovalConsumeAttempts int    `json:"approval_consume_attempts"`
-		} `json:"effect"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
 		t.Fatalf("decode enforced replay: %v", err)
@@ -150,50 +134,14 @@ func TestEnforcedReplayPreservesExternalIdentityAndDeniesBeforeDependencies(t *t
 		result.Identity.SubjectKind != "external" || result.Identity.Actor != "telegram-agent" || result.Identity.Channel != "telegram" ||
 		result.Outcome != "deny" || result.FailedCondition != "smart_lock_owner_subject_required" ||
 		result.Evidence.TraceID == "" || result.Evidence.CorrelationID == "" || result.Evidence.DecisionID == "" ||
-		result.Evidence.PolicyRevision != "ticket-10" || result.Effect.Before != "locked" || result.Effect.After != "locked" ||
-		result.Effect.UnlockCount != 0 || result.Effect.ApprovalConsumeAttempts != 0 {
+		result.Evidence.PolicyRevision != "ticket-10" {
 		t.Fatalf("unexpected enforced replay: %#v", result)
 	}
-}
-
-func TestDemoResetRestoresBothSimulatedLocksWithoutRecreatingServers(t *testing.T) {
-	const resetCredential = "internal-demo-reset"
-	insecureLock := httptest.NewServer(smartlockserver.NewDemoHandler("insecure-credential", resetCredential))
-	t.Cleanup(insecureLock.Close)
-	secureLock := httptest.NewServer(smartlockserver.NewDemoHandler("secure-credential", resetCredential))
-	t.Cleanup(secureLock.Close)
-	demo := httptest.NewServer(replaydemo.NewHandler(replaydemo.Config{
-		InsecureLockURL: insecureLock.URL, SecureLockURL: secureLock.URL,
-		ResetCredential: resetCredential, HTTPClient: http.DefaultClient,
-	}))
-	t.Cleanup(demo.Close)
-
-	for attempt := 1; attempt <= 2; attempt++ {
-		unlockDirect(t, insecureLock.URL, "insecure-credential")
-		unlockDirect(t, secureLock.URL, "secure-credential")
-		response := post(t, demo.URL+"/demo/reset")
-		defer response.Body.Close()
-		if response.StatusCode != http.StatusOK {
-			t.Fatalf("reset %d status = %d, want %d", attempt, response.StatusCode, http.StatusOK)
-		}
-		var result struct {
-			ScenarioState string `json:"scenario_state"`
-			InsecureLock  struct {
-				State       string `json:"state"`
-				UnlockCount int    `json:"unlock_count"`
-			} `json:"insecure_lock"`
-			SecureLock struct {
-				State       string `json:"state"`
-				UnlockCount int    `json:"unlock_count"`
-			} `json:"secure_lock"`
-		}
-		if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
-			t.Fatalf("decode reset %d: %v", attempt, err)
-		}
-		if result.ScenarioState != "ready" || result.InsecureLock.State != "locked" || result.InsecureLock.UnlockCount != 0 ||
-			result.SecureLock.State != "locked" || result.SecureLock.UnlockCount != 0 {
-			t.Fatalf("unexpected reset %d: %#v", attempt, result)
-		}
+	if got := metricCount(t, approvalMetrics.URL+"/metrics", "consume_count"); got != 7 {
+		t.Fatalf("Approval consume_count = %d, want 7", got)
+	}
+	if got := metricCount(t, secureLockMetrics.URL+"/metrics", "unlock_count"); got != 0 {
+		t.Fatalf("adapter unlock_count = %d, want 0", got)
 	}
 }
 
@@ -254,22 +202,22 @@ func metricsServer(t *testing.T, snapshot func() map[string]any) *httptest.Serve
 	return server
 }
 
-func unlockDirect(t *testing.T, baseURL, credential string) {
+func metricCount(t *testing.T, endpoint, name string) int {
 	t.Helper()
-	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, baseURL+"/unlock", bytes.NewBufferString(`{"device_id":"demo-front-door"}`))
+	response, err := http.Get(endpoint)
 	if err != nil {
-		t.Fatalf("create direct unlock: %v", err)
-	}
-	request.Header.Set("Authorization", "Bearer "+credential)
-	request.Header.Set("Content-Type", "application/json")
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		t.Fatalf("direct unlock: %v", err)
+		t.Fatalf("read %s: %v", name, err)
 	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("direct unlock status = %d, want %d", response.StatusCode, http.StatusOK)
+	var metrics map[string]any
+	if err := json.NewDecoder(response.Body).Decode(&metrics); err != nil {
+		t.Fatalf("decode %s: %v", name, err)
 	}
+	value, ok := metrics[name].(float64)
+	if !ok {
+		t.Fatalf("metric %s is not numeric: %#v", name, metrics[name])
+	}
+	return int(value)
 }
 
 func post(t *testing.T, endpoint string) *http.Response {

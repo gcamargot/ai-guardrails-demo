@@ -20,12 +20,13 @@ func main() {
 		ttl = parsed
 	}
 	handler := approvalauthority.NewHandler(approvalauthority.Config{
-		SigningKey:         []byte(envconfig.Must("APPROVAL_SIGNING_KEY")),
-		IssuerCredential:   envconfig.Must("APPROVAL_ISSUER_CREDENTIAL"),
-		ConsumerCredential: envconfig.Must("APPROVAL_CONSUMER_CREDENTIAL"),
-		OwnerSubject:       envconfig.Must("OWNER_SUBJECT"),
-		TTL:                ttl,
-		StateFile:          envconfig.Must("APPROVAL_STATE_FILE"),
+		SigningKey:          []byte(envconfig.Must("APPROVAL_SIGNING_KEY")),
+		IssuerCredential:    envconfig.Must("APPROVAL_ISSUER_CREDENTIAL"),
+		ConsumerCredential:  envconfig.Must("APPROVAL_CONSUMER_CREDENTIAL"),
+		OwnerSubject:        envconfig.Must("OWNER_SUBJECT"),
+		DemoResetCredential: envconfig.Must("DEMO_RESET_CREDENTIAL"),
+		TTL:                 ttl,
+		StateFile:           envconfig.Must("APPROVAL_STATE_FILE"),
 	})
 	server := &http.Server{
 		Addr: ":8086", Handler: handler, ReadHeaderTimeout: 5 * time.Second,

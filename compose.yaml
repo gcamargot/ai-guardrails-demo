@@ -211,6 +211,8 @@ services:
   audit:
     build: .
     command: /app/audit
+    environment:
+      DEMO_RESET_CREDENTIAL: demo-reset-control-credential
     networks:
       - audit
       - observability
@@ -237,6 +239,7 @@ services:
       APPROVAL_SIGNING_KEY: demo-approval-signing-key-32-bytes-minimum
       APPROVAL_STATE_FILE: /state/consumed-nonces
       APPROVAL_TTL: 5s
+      DEMO_RESET_CREDENTIAL: demo-reset-control-credential
       OWNER_SUBJECT: owner-subject-id
     networks:
       - approval
@@ -415,9 +418,7 @@ services:
     build: .
     command: /app/replay-demo
     environment:
-      APPROVAL_METRICS_URL: http://approval-authority:8086/metrics
       AUDIT_RECORDS_URL: http://audit:8089/records
-      DEMO_RESET_CREDENTIAL: demo-reset-control-credential
       EXTERNAL_PASSWORD: external-demo-password
       EXTERNAL_USERNAME: external-alice
       INSECURE_LOCK_CREDENTIAL: insecure-prompt-only-credential
@@ -427,18 +428,12 @@ services:
       OIDC_CLIENT_SECRET: telegram-demo-secret
       QWEN_URL: http://qwen:8085
       SECURE_GATEWAY_MCP_URL: http://telegram-gateway:8080/mcp
-      SECURE_LOCK_METRICS_URL: http://smart-lock:8088/metrics
-      SECURE_LOCK_URL: http://smart-lock:8088
     depends_on:
-      approval-authority:
-        condition: service_healthy
       audit:
         condition: service_healthy
       insecure-smart-lock:
         condition: service_healthy
       qwen:
-        condition: service_healthy
-      smart-lock:
         condition: service_healthy
       telegram-gateway:
         condition: service_healthy
@@ -448,9 +443,37 @@ services:
       - model
       - exploit
       - audit
-      - observability
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8093/healthz"]
+      interval: 2s
+      timeout: 1s
+      retries: 15
+
+  demo-control:
+    build: .
+    command: /app/demo-control
+    environment:
+      APPROVAL_AUTHORITY_URL: http://approval-authority:8086
+      AUDIT_URL: http://audit:8089
+      DEMO_RESET_CREDENTIAL: demo-reset-control-credential
+      INSECURE_LOCK_URL: http://insecure-smart-lock:8092
+      SECURE_LOCK_URL: http://smart-lock:8088
+    depends_on:
+      approval-authority:
+        condition: service_healthy
+      audit:
+        condition: service_healthy
+      insecure-smart-lock:
+        condition: service_healthy
+      smart-lock:
+        condition: service_healthy
+    networks:
+      - demo-control
+      - exploit
+      - audit
+      - observability
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8094/healthz"]
       interval: 2s
       timeout: 1s
       retries: 15
@@ -505,6 +528,9 @@ services:
       CALENDAR_METRICS_URL: http://calendar:8083/metrics
       SMART_LOCK_METRICS_URL: http://smart-lock:8088/metrics
       REPLAY_DEMO_URL: http://replay-demo:8093
+      DEMO_CONTROL_URL: http://demo-control:8094
+      DEMO_RESET_CREDENTIAL: demo-reset-control-credential
+      APPROVAL_METRICS_URL: http://approval-authority:8086/metrics
       GATEWAY_MCP_URL: http://gateway:8080/mcp
       KEYCLOAK_TOKEN_URL: http://keycloak:8080/realms/agent-tools/protocol/openid-connect/token
       IDENTITY_FAULT_URL: http://oauth-facade:8082/test/identity
@@ -515,6 +541,8 @@ services:
         condition: service_healthy
       replay-demo:
         condition: service_healthy
+      demo-control:
+        condition: service_healthy
       telegram-adapter:
         condition: service_healthy
     networks:
@@ -523,6 +551,7 @@ services:
       - observability
       - audit
       - control
+      - demo-control
     profiles:
       - test
 
@@ -583,6 +612,28 @@ services:
     profiles:
       - test
 
+  replay-network-probe:
+    image: alpine:3.22
+    command:
+      - sh
+      - -ec
+      - |
+        wget -q -O /dev/null http://replay-demo:8093/healthz
+        for target in coffee-station:8081 calendar:8083 outlook:8087 smart-lock:8088 development-repository:8090; do
+          if wget -q -T 1 -O /dev/null "http://$$target/healthz" 2>/dev/null; then
+            echo "Replay Actor reached protected adapter $$target" >&2
+            exit 1
+          fi
+        done
+    networks:
+      - public
+      - identity
+      - model
+      - exploit
+      - audit
+    profiles:
+      - test
+
 networks:
   public: {}
   control:
@@ -602,6 +653,8 @@ networks:
   audit:
     internal: true
   exploit:
+    internal: true
+  demo-control:
     internal: true
 
 volumes:
