@@ -2,8 +2,47 @@ package agent_tools_test
 
 import data.agent_tools.decision
 
+test_coding_owner_can_read_only_allowlisted_repository_artifact if {
+	decision == {"allow": true, "policy_revision": "ticket-07", "reason": "owner_coding_repository_read"} with input as {
+		"security_context": {
+			"subject": "owner-subject-id", "actor": "coding-agent", "channel": "streamable-http",
+			"turn_capabilities": ["dev.repository.read"],
+		},
+		"operation": "execute", "tool": "dev.read_repository", "arguments": {"path": "CONTEXT.md"},
+	}
+}
+
+test_coding_actor_can_discover_repository_but_not_smart_lock if {
+	repository := decision with input as {
+		"security_context": {
+			"subject": "owner-subject-id", "actor": "coding-agent", "channel": "streamable-http",
+			"turn_capabilities": ["dev.repository.read", "smart_lock.write"],
+		},
+		"operation": "discover", "tool": "dev.read_repository",
+	}
+	lock := decision with input as {
+		"security_context": {
+			"subject": "owner-subject-id", "actor": "coding-agent", "channel": "streamable-http",
+			"turn_capabilities": ["dev.repository.read", "smart_lock.write"],
+		},
+		"operation": "discover", "tool": "smart_lock.unlock",
+	}
+	repository.allow
+	not lock.allow
+}
+
+test_client_allowlist_cannot_broaden_coding_authority if {
+	not decision.allow with input as {
+		"security_context": {
+			"subject": "owner-subject-id", "actor": "coding-agent", "channel": "streamable-http",
+			"turn_capabilities": ["dev.repository.read", "smart_lock.write"],
+		},
+		"operation": "execute", "tool": "smart_lock.unlock", "arguments": {"device_id": "demo-front-door"},
+	}
+}
+
 test_only_owner_telegram_capability_and_fixed_device_can_unlock if {
-	decision == {"allow": true, "policy_revision": "ticket-06", "reason": "owner_exact_smart_lock"} with input as {
+	decision == {"allow": true, "policy_revision": "ticket-07", "reason": "owner_exact_smart_lock"} with input as {
 		"security_context": {
 			"subject": "owner-subject-id", "actor": "telegram-agent", "channel": "telegram",
 			"turn_capabilities": ["smart_lock.write"],
@@ -144,7 +183,7 @@ test_owner_can_review_and_approve_exact_proposal if {
 }
 
 test_owner_can_read_demo_station if {
-	decision == {"allow": true, "policy_revision": "ticket-06", "reason": "owner_demo_station"} with input as {
+	decision == {"allow": true, "policy_revision": "ticket-07", "reason": "owner_demo_station"} with input as {
 		"security_context": {
 			"subject": "owner-subject-id",
 			"actor": "telegram-agent",
@@ -158,7 +197,7 @@ test_owner_can_read_demo_station if {
 }
 
 test_coding_agent_can_read_for_same_owner if {
-	decision == {"allow": true, "policy_revision": "ticket-06", "reason": "owner_demo_station"} with input as {
+	decision == {"allow": true, "policy_revision": "ticket-07", "reason": "owner_demo_station"} with input as {
 		"security_context": {
 			"subject": "owner-subject-id",
 			"actor": "coding-agent",
@@ -172,7 +211,7 @@ test_coding_agent_can_read_for_same_owner if {
 }
 
 test_external_subject_is_denied if {
-	decision == {"allow": false, "policy_revision": "ticket-06", "reason": "default_deny"} with input as {
+	decision == {"allow": false, "policy_revision": "ticket-07", "reason": "default_deny"} with input as {
 		"security_context": {
 			"subject": "external",
 			"actor": "telegram-agent",
@@ -186,7 +225,7 @@ test_external_subject_is_denied if {
 }
 
 test_other_station_is_denied if {
-	decision == {"allow": false, "policy_revision": "ticket-06", "reason": "default_deny"} with input as {
+	decision == {"allow": false, "policy_revision": "ticket-07", "reason": "default_deny"} with input as {
 		"security_context": {
 			"subject": "owner-subject-id",
 			"actor": "telegram-agent",
@@ -200,7 +239,7 @@ test_other_station_is_denied if {
 }
 
 test_owner_can_discover_tool if {
-	decision == {"allow": true, "policy_revision": "ticket-06", "reason": "owner_tool_discovery"} with input as {
+	decision == {"allow": true, "policy_revision": "ticket-07", "reason": "owner_tool_discovery"} with input as {
 		"security_context": {
 			"subject": "owner-subject-id",
 			"actor": "telegram-agent",
@@ -226,7 +265,7 @@ test_external_subject_cannot_discover_tool if {
 }
 
 test_external_subject_can_find_availability_in_working_window if {
-	decision == {"allow": true, "policy_revision": "ticket-06", "reason": "external_free_busy"} with input as {
+	decision == {"allow": true, "policy_revision": "ticket-07", "reason": "external_free_busy"} with input as {
 		"security_context": {
 			"subject": "external-alice-subject-id",
 			"actor": "telegram-agent",
@@ -260,7 +299,7 @@ test_external_subject_is_denied_outside_future_window if {
 }
 
 test_external_subject_can_discover_only_availability if {
-	decision == {"allow": true, "policy_revision": "ticket-06", "reason": "external_availability_discovery"} with input as {
+	decision == {"allow": true, "policy_revision": "ticket-07", "reason": "external_availability_discovery"} with input as {
 		"security_context": {
 			"subject": "external-alice-subject-id",
 			"actor": "telegram-agent",

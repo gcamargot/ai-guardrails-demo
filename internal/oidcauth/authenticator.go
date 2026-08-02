@@ -17,6 +17,7 @@ type Config struct {
 	RequiredScopes  []gateway.Capability
 	OptionalScopes  []gateway.Capability
 	DiscoveryClient *http.Client
+	JWKSURL         string
 }
 
 type Authenticator struct {
@@ -32,12 +33,18 @@ func New(ctx context.Context, config Config) (*Authenticator, error) {
 	if config.DiscoveryClient != nil {
 		ctx = oidc.ClientContext(ctx, config.DiscoveryClient)
 	}
-	provider, err := oidc.NewProvider(ctx, config.Issuer)
-	if err != nil {
-		return nil, fmt.Errorf("discover OIDC issuer: %w", err)
+	var verifier *oidc.IDTokenVerifier
+	if config.JWKSURL != "" {
+		verifier = oidc.NewVerifier(config.Issuer, oidc.NewRemoteKeySet(ctx, config.JWKSURL), &oidc.Config{ClientID: config.Audience})
+	} else {
+		provider, err := oidc.NewProvider(ctx, config.Issuer)
+		if err != nil {
+			return nil, fmt.Errorf("discover OIDC issuer: %w", err)
+		}
+		verifier = provider.Verifier(&oidc.Config{ClientID: config.Audience})
 	}
 	return &Authenticator{
-		verifier:       provider.Verifier(&oidc.Config{ClientID: config.Audience}),
+		verifier:       verifier,
 		requiredScopes: append([]gateway.Capability(nil), config.RequiredScopes...),
 		optionalScopes: append([]gateway.Capability(nil), config.OptionalScopes...),
 	}, nil

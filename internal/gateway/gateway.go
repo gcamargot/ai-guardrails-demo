@@ -11,6 +11,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/nahtao97/agent-tool-guardrails/internal/approvalauthority"
+	"github.com/nahtao97/agent-tool-guardrails/internal/development"
 	"github.com/nahtao97/agent-tool-guardrails/internal/freebusy"
 	"github.com/nahtao97/agent-tool-guardrails/internal/meeting"
 	"github.com/nahtao97/agent-tool-guardrails/internal/outlook"
@@ -36,6 +37,7 @@ const (
 	unlockSmartLockTool     ToolName        = smartlock.UnlockTool
 	searchOutlookTool       ToolName        = "outlook.search_messages"
 	readOutlookTool         ToolName        = "outlook.read_message"
+	readRepositoryTool      ToolName        = "dev.read_repository"
 	discoverOperation       PolicyOperation = "discover"
 	executeOperation        PolicyOperation = "execute"
 )
@@ -144,6 +146,20 @@ type SmartLock interface {
 }
 
 type SmartLockState = smartlock.State
+type RepositoryPath = development.RepositoryPath
+type RepositoryDocument = development.RepositoryDocument
+
+type DevelopmentRepository interface {
+	Read(context.Context, development.RepositoryPath) (development.RepositoryDocument, error)
+	Health(context.Context) error
+}
+
+type OAuthResource struct {
+	Resource             string
+	MetadataURL          string
+	AuthorizationServers []string
+	Scopes               []Capability
+}
 
 type Dependencies struct {
 	Identity       IdentityVerifier
@@ -157,6 +173,8 @@ type Dependencies struct {
 	SmartLock      SmartLock
 	Outlook        Outlook
 	Audit          AuditSink
+	OAuth          OAuthResource
+	Development    DevelopmentRepository
 }
 
 type coffeeStationStatusInput struct {
@@ -199,6 +217,10 @@ type readOutlookInput struct {
 	MessageID outlook.MessageID `json:"message_id" jsonschema:"exact demo message identifier"`
 }
 
+type readRepositoryInput struct {
+	Path development.RepositoryPath `json:"path" jsonschema:"fixed allowlisted repository artifact"`
+}
+
 type searchOutlookOutput struct {
 	Messages []outlook.SearchResult `json:"messages"`
 }
@@ -221,28 +243,66 @@ func NewHandler(deps Dependencies) http.Handler {
 	)
 
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", authenticate(deps.Identity, mcpHandler))
+	mux.Handle("/mcp", authenticate(deps.Identity, deps.OAuth, mcpHandler))
+	mux.HandleFunc("GET /.well-known/oauth-protected-resource", oauthResourceMetadata(deps.OAuth))
 	mux.HandleFunc("GET /healthz", healthHandler(deps))
 	return mux
 }
 
 type identityContextKey struct{}
 
-func authenticate(identity IdentityVerifier, next http.Handler) http.Handler {
+func authenticate(identity IdentityVerifier, oauth OAuthResource, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		const prefix = "Bearer "
 		authorization := request.Header.Get("Authorization")
 		if identity == nil || !strings.HasPrefix(authorization, prefix) || len(authorization) == len(prefix) {
+			writeOAuthChallenge(response, oauth)
 			http.Error(response, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		trusted, err := identity.Verify(request.Context(), strings.TrimPrefix(authorization, prefix))
 		if err != nil {
+			writeOAuthChallenge(response, oauth)
 			http.Error(response, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		next.ServeHTTP(response, request.WithContext(context.WithValue(request.Context(), identityContextKey{}, trusted)))
 	})
+}
+
+func writeOAuthChallenge(response http.ResponseWriter, oauth OAuthResource) {
+	if oauth.MetadataURL == "" {
+		return
+	}
+	challenge := fmt.Sprintf(`Bearer resource_metadata=%q`, oauth.MetadataURL)
+	if len(oauth.Scopes) > 0 {
+		scopes := make([]string, len(oauth.Scopes))
+		for index, scope := range oauth.Scopes {
+			scopes[index] = string(scope)
+		}
+		challenge += fmt.Sprintf(`, scope=%q`, strings.Join(scopes, " "))
+	}
+	response.Header().Set("WWW-Authenticate", challenge)
+}
+
+func oauthResourceMetadata(oauth OAuthResource) http.HandlerFunc {
+	return func(response http.ResponseWriter, _ *http.Request) {
+		if oauth.Resource == "" || len(oauth.AuthorizationServers) == 0 {
+			http.Error(response, "not found", http.StatusNotFound)
+			return
+		}
+		scopes := make([]string, len(oauth.Scopes))
+		for index, scope := range oauth.Scopes {
+			scopes[index] = string(scope)
+		}
+		response.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"resource":                 oauth.Resource,
+			"authorization_servers":    oauth.AuthorizationServers,
+			"scopes_supported":         scopes,
+			"bearer_methods_supported": []string{"header"},
+		})
+	}
 }
 
 func newMCPServer(deps Dependencies, securityContext SecurityContext) *mcp.Server {
@@ -322,6 +382,36 @@ func newMCPServer(deps Dependencies, securityContext SecurityContext) *mcp.Serve
 			return result, CoffeeStationStatus{}, nil
 		}
 		return result, status, nil
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        string(readRepositoryTool),
+		Description: "Read the fixed allowlisted CONTEXT.md artifact from the demo repository.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input readRepositoryInput) (*mcp.CallToolResult, development.RepositoryDocument, error) {
+		if input.Path != development.ContextPath {
+			result := &mcp.CallToolResult{}
+			result.SetError(errors.New("repository path is not allowlisted"))
+			return result, development.RepositoryDocument{}, nil
+		}
+		result, allowed, err := authorize(ctx, deps.Policy, securityContext, readRepositoryTool, input)
+		if err != nil {
+			return nil, development.RepositoryDocument{}, err
+		}
+		if !allowed {
+			return result, development.RepositoryDocument{}, nil
+		}
+		if deps.Development == nil {
+			return nil, development.RepositoryDocument{}, errors.New("development repository is unavailable")
+		}
+		document, err := deps.Development.Read(ctx, input.Path)
+		if err != nil {
+			return nil, development.RepositoryDocument{}, err
+		}
+		if err := document.Validate(input.Path); err != nil {
+			result.SetError(err)
+			return result, development.RepositoryDocument{}, nil
+		}
+		return result, document, nil
 	})
 
 	mcp.AddTool(server, &mcp.Tool{
@@ -728,6 +818,15 @@ func healthHandler(deps Dependencies) http.HandlerFunc {
 		}
 		if deps.SmartLock != nil {
 			if err := deps.SmartLock.Health(request.Context()); err != nil {
+				response.WriteHeader(http.StatusServiceUnavailable)
+				_ = json.NewEncoder(response).Encode(map[string]string{
+					"status": "unavailable", "policy": "ready", "resource": "unavailable",
+				})
+				return
+			}
+		}
+		if deps.Development != nil {
+			if err := deps.Development.Health(request.Context()); err != nil {
 				response.WriteHeader(http.StatusServiceUnavailable)
 				_ = json.NewEncoder(response).Encode(map[string]string{
 					"status": "unavailable", "policy": "ready", "resource": "unavailable",

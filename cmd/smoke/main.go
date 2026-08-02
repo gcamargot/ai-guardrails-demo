@@ -32,7 +32,7 @@ func main() {
 	}
 
 	telegramToken := obtainToken(ctx, tokenEndpoint, "telegram-agent", "telegram-demo-secret", "owner", "owner-demo-password")
-	codingToken := obtainToken(ctx, tokenEndpoint, "coding-agent", "coding-demo-secret", "owner", "owner-demo-password")
+	codingToken := obtainToken(ctx, tokenEndpoint, "coding-agent", "", "owner", "owner-demo-password")
 	telegramClaims := readClaims(telegramToken)
 	codingClaims := readClaims(codingToken)
 	if telegramClaims.Subject == "" || telegramClaims.Subject != codingClaims.Subject {
@@ -50,6 +50,7 @@ func main() {
 			"capabilities": []string{"smart_lock.write"},
 		},
 	})
+	repositoryPath := callDevelopmentRepository(ctx, endpoint, codingToken)
 	externalToken := obtainToken(
 		ctx,
 		tokenEndpoint,
@@ -69,12 +70,13 @@ func main() {
 	lockTrace := runSmartLockFlow(ctx, tokenEndpoint, endpoint, telegramGatewayEndpoint, telegramWebhookEndpoint, smartLockMetricsEndpoint, auditRecordsEndpoint)
 
 	fmt.Printf(
-		"PASS subject=%s actors=%s,%s telegram_decision=%v coding_decision=%v available_intervals=%d outlook_message=%s outlook_effect_count=0 proposal=%s event=%s event_count=1 smart_lock_trace=%s unlock_count=1 policy_revision=ticket-06\n",
+		"PASS subject=%s actors=%s,%s telegram_decision=%v coding_decision=%v repository=%s available_intervals=%d outlook_message=%s outlook_effect_count=0 proposal=%s event=%s event_count=1 smart_lock_trace=%s unlock_count=1 policy_revision=ticket-07\n",
 		telegramClaims.Subject,
 		telegramClaims.Actor,
 		codingClaims.Actor,
 		telegramDecision,
 		codingDecision,
+		repositoryPath,
 		intervals,
 		outlookMessageID,
 		proposalID,
@@ -87,7 +89,7 @@ func runSmartLockFlow(ctx context.Context, tokenEndpoint, generalGatewayEndpoint
 	defaultOwner := obtainToken(ctx, tokenEndpoint, "telegram-agent", "telegram-demo-secret", "owner", "owner-demo-password")
 	owner := obtainTokenWithScopes(ctx, tokenEndpoint, "telegram-agent", "telegram-demo-secret", "owner", "owner-demo-password", []string{"smart_lock.write"})
 	external := obtainTokenWithScopes(ctx, tokenEndpoint, "telegram-agent", "telegram-demo-secret", "external-alice", "external-demo-password", []string{"smart_lock.write"})
-	coding := obtainTokenWithScopes(ctx, tokenEndpoint, "coding-agent", "coding-demo-secret", "owner", "owner-demo-password", []string{"smart_lock.write"})
+	coding := obtainTokenWithScopes(ctx, tokenEndpoint, "coding-agent", "", "owner", "owner-demo-password", []string{"smart_lock.write"})
 	verifySmartLockAccess(ctx, telegramGatewayEndpoint, defaultOwner, false)
 	verifySmartLockAccess(ctx, telegramGatewayEndpoint, external, false)
 	verifySmartLockAccess(ctx, generalGatewayEndpoint, coding, false)
@@ -202,17 +204,47 @@ func verifySmartLockAudit(ctx context.Context, endpoint, traceID, approval strin
 	if strings.Contains(string(encoded), approval) || strings.Contains(string(encoded), "owner-subject-id") {
 		log.Fatalf("audit leaked Approval or Subject identifier: %s", encoded)
 	}
-	foundAllow, foundDeny := false, false
+	foundAllow, foundDeny, foundCodingDeny := false, false, false
 	for _, record := range records {
 		if record["tool"] != "smart_lock.unlock" || record["decision_id"] == "" {
 			continue
 		}
 		foundAllow = foundAllow || (record["outcome"] == "allow" && record["trace_id"] == traceID)
 		foundDeny = foundDeny || record["outcome"] == "deny"
+		foundCodingDeny = foundCodingDeny || (record["outcome"] == "deny" && record["subject_kind"] == "owner" &&
+			record["actor"] == "coding-agent" && record["channel"] == "streamable-http")
 	}
-	if !foundAllow || !foundDeny {
+	if !foundAllow || !foundDeny || !foundCodingDeny {
 		log.Fatalf("missing correlated smart-lock allow/deny audit: %#v", records)
 	}
+}
+
+func callDevelopmentRepository(ctx context.Context, endpoint, token string) string {
+	session := connectMCP(ctx, endpoint, token)
+	defer session.Close()
+	listed, err := session.ListTools(ctx, nil)
+	if err != nil {
+		log.Fatalf("list coding Tools: %v", err)
+	}
+	foundDevelopment, foundSmartLock := false, false
+	for _, tool := range listed.Tools {
+		foundDevelopment = foundDevelopment || tool.Name == "dev.read_repository"
+		foundSmartLock = foundSmartLock || tool.Name == "smart_lock.unlock"
+	}
+	if !foundDevelopment || foundSmartLock {
+		log.Fatalf("server discovery for coding Actor: development=%v smart_lock=%v", foundDevelopment, foundSmartLock)
+	}
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "dev.read_repository", Arguments: map[string]any{"path": "CONTEXT.md"},
+	})
+	if err != nil || result.IsError {
+		log.Fatalf("coding repository Tool failed: result=%#v err=%v", result, err)
+	}
+	output, ok := result.StructuredContent.(map[string]any)
+	if !ok || output["path"] != "CONTEXT.md" || !strings.Contains(fmt.Sprint(output["content"]), "# Agent Tool Authorization") {
+		log.Fatalf("coding repository output was not strict: %#v", result.StructuredContent)
+	}
+	return "CONTEXT.md"
 }
 
 func runOutlookFlow(ctx context.Context, tokenEndpoint, gatewayEndpoint, webhookEndpoint, statsEndpoint string) string {
@@ -334,7 +366,7 @@ func callCoffeeStation(ctx context.Context, endpoint, token string, meta mcp.Met
 	if !ok || output["state"] != "ready" {
 		log.Fatalf("unexpected authenticated result: %#v", result.StructuredContent)
 	}
-	if result.Meta["policy_revision"] != "ticket-06" {
+	if result.Meta["policy_revision"] != "ticket-07" {
 		log.Fatalf("unexpected policy revision: %v", result.Meta["policy_revision"])
 	}
 	return result.Meta["decision_id"]

@@ -2,8 +2,35 @@ package agent_tools
 
 default decision := {
 	"allow":           false,
-	"policy_revision": "ticket-06",
+	"policy_revision": "ticket-07",
 	"reason":          "default_deny",
+}
+
+eligible_owner_coding_repository if {
+	input.security_context.subject == "owner-subject-id"
+	input.security_context.actor == "coding-agent"
+	input.security_context.channel == "streamable-http"
+	input.security_context.turn_capabilities[_] == "dev.repository.read"
+	input.tool == "dev.read_repository"
+}
+
+decision := {
+	"allow":           true,
+	"policy_revision": "ticket-07",
+	"reason":          "owner_coding_repository_read",
+} if {
+	eligible_owner_coding_repository
+	input.operation == "discover"
+}
+
+decision := {
+	"allow":           true,
+	"policy_revision": "ticket-07",
+	"reason":          "owner_coding_repository_read",
+} if {
+	eligible_owner_coding_repository
+	input.operation == "execute"
+	input.arguments == {"path": "CONTEXT.md"}
 }
 
 eligible_owner_outlook if {
@@ -16,7 +43,7 @@ eligible_owner_outlook if {
 
 decision := {
 	"allow":           true,
-	"policy_revision": "ticket-06",
+	"policy_revision": "ticket-07",
 	"reason":          "owner_outlook_read_discovery",
 } if {
 	eligible_owner_outlook
@@ -25,7 +52,7 @@ decision := {
 
 decision := {
 	"allow":           true,
-	"policy_revision": "ticket-06",
+	"policy_revision": "ticket-07",
 	"reason":          "owner_exact_outlook_message",
 } if {
 	eligible_owner_outlook
@@ -36,7 +63,7 @@ decision := {
 
 decision := {
 	"allow":           true,
-	"policy_revision": "ticket-06",
+	"policy_revision": "ticket-07",
 	"reason":          "owner_bounded_outlook_search",
 } if {
 	eligible_owner_outlook
@@ -59,7 +86,7 @@ eligible_owner_tool if {
 
 decision := {
 	"allow":           true,
-	"policy_revision": "ticket-06",
+	"policy_revision": "ticket-07",
 	"reason":          "owner_demo_station",
 } if {
 	eligible_owner_tool
@@ -69,7 +96,7 @@ decision := {
 
 decision := {
 	"allow":           true,
-	"policy_revision": "ticket-06",
+	"policy_revision": "ticket-07",
 	"reason":          "owner_tool_discovery",
 } if {
 	eligible_owner_tool
@@ -109,7 +136,7 @@ working_day_end(clock) if {
 
 decision := {
 	"allow":           true,
-	"policy_revision": "ticket-06",
+	"policy_revision": "ticket-07",
 	"reason":          "external_free_busy",
 } if {
 	eligible_external_availability
@@ -119,7 +146,7 @@ decision := {
 
 decision := {
 	"allow":           true,
-	"policy_revision": "ticket-06",
+	"policy_revision": "ticket-07",
 	"reason":          "external_availability_discovery",
 } if {
 	eligible_external_availability
@@ -136,7 +163,7 @@ eligible_external_proposal if {
 
 decision := {
 	"allow":           true,
-	"policy_revision": "ticket-06",
+	"policy_revision": "ticket-07",
 	"reason":          "external_meeting_proposal",
 } if {
 	eligible_external_proposal
@@ -153,7 +180,7 @@ eligible_owner_meeting_approval if {
 
 decision := {
 	"allow":           true,
-	"policy_revision": "ticket-06",
+	"policy_revision": "ticket-07",
 	"reason":          "owner_exact_meeting_approval",
 } if {
 	eligible_owner_meeting_approval
@@ -170,7 +197,7 @@ eligible_owner_smart_lock if {
 
 decision := {
 	"allow":           true,
-	"policy_revision": "ticket-06",
+	"policy_revision": "ticket-07",
 	"reason":          "owner_exact_smart_lock",
 } if {
 	eligible_owner_smart_lock
@@ -179,7 +206,7 @@ decision := {
 
 decision := {
 	"allow":           true,
-	"policy_revision": "ticket-06",
+	"policy_revision": "ticket-07",
 	"reason":          "owner_exact_smart_lock",
 } if {
 	eligible_owner_smart_lock

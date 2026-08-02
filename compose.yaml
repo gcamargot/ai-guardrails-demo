@@ -6,6 +6,7 @@ services:
       KC_BOOTSTRAP_ADMIN_USERNAME: demo-admin
       KC_BOOTSTRAP_ADMIN_PASSWORD: demo-admin-password
       KC_HEALTH_ENABLED: "true"
+      KC_HOSTNAME: http://127.0.0.1:8082
     volumes:
       - ./keycloak/agent-tools-realm.json:/opt/keycloak/data/import/agent-tools-realm.json:ro
     ports:
@@ -127,6 +128,21 @@ services:
       timeout: 1s
       retries: 15
 
+  development-repository:
+    build: .
+    command: /app/development-repository
+    environment:
+      REPOSITORY_DOCUMENT_FILE: /repository/CONTEXT.md
+    volumes:
+      - ./CONTEXT.md:/repository/CONTEXT.md:ro
+    networks:
+      - protected
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8090/healthz"]
+      interval: 2s
+      timeout: 1s
+      retries: 15
+
   smart-lock:
     build: .
     command: /app/smart-lock
@@ -201,10 +217,16 @@ services:
       AUTH_CHANNEL: streamable-http
       CALENDAR_URL: http://calendar:8083
       COFFEE_STATION_URL: http://coffee-station:8081
+      DEVELOPMENT_REPOSITORY_URL: http://development-repository:8090
+      OAUTH_AUTHORIZATION_SERVER: http://127.0.0.1:8082/realms/agent-tools
+      OAUTH_METADATA_URL: http://127.0.0.1:8080/.well-known/oauth-protected-resource
+      OAUTH_RESOURCE_URL: http://127.0.0.1:8080/mcp
+      OAUTH_SCOPES: coffee_station.read,dev.repository.read
       OPA_URL: http://opa:8181
       OIDC_AUDIENCE: agent-tools-gateway
-      OIDC_ISSUER: http://keycloak:8080/realms/agent-tools
-      OIDC_OPTIONAL_SCOPES: smart_lock.write
+      OIDC_ISSUER: http://127.0.0.1:8082/realms/agent-tools
+      OIDC_JWKS_URL: http://keycloak:8080/realms/agent-tools/protocol/openid-connect/certs
+      OIDC_OPTIONAL_SCOPES: dev.repository.read,smart_lock.write
       OIDC_REQUIRED_SCOPES: coffee_station.read
       OUTLOOK_URL: http://outlook:8087
       SMART_LOCK_URL: http://smart-lock:8088
@@ -218,6 +240,8 @@ services:
       calendar:
         condition: service_healthy
       coffee-station:
+        condition: service_healthy
+      development-repository:
         condition: service_healthy
       keycloak:
         condition: service_healthy
@@ -257,9 +281,15 @@ services:
       AUTH_CHANNEL: telegram
       CALENDAR_URL: http://calendar:8083
       COFFEE_STATION_URL: http://coffee-station:8081
+      DEVELOPMENT_REPOSITORY_URL: http://development-repository:8090
+      OAUTH_AUTHORIZATION_SERVER: http://127.0.0.1:8082/realms/agent-tools
+      OAUTH_METADATA_URL: http://127.0.0.1:8080/.well-known/oauth-protected-resource
+      OAUTH_RESOURCE_URL: http://127.0.0.1:8080/mcp
+      OAUTH_SCOPES: dev.repository.read
       OPA_URL: http://opa:8181
       OIDC_AUDIENCE: agent-tools-gateway
-      OIDC_ISSUER: http://keycloak:8080/realms/agent-tools
+      OIDC_ISSUER: http://127.0.0.1:8082/realms/agent-tools
+      OIDC_JWKS_URL: http://keycloak:8080/realms/agent-tools/protocol/openid-connect/certs
       OIDC_OPTIONAL_SCOPES: calendar.meeting.approve,outlook.mail.read,smart_lock.write
       OIDC_REQUIRED_SCOPES: calendar.free_busy.read,calendar.meeting.propose
       OUTLOOK_URL: http://outlook:8087
@@ -274,6 +304,8 @@ services:
       calendar:
         condition: service_healthy
       coffee-station:
+        condition: service_healthy
+      development-repository:
         condition: service_healthy
       keycloak:
         condition: service_healthy

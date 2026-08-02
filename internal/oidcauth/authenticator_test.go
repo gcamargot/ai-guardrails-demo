@@ -107,6 +107,29 @@ func TestTwoOAuthClientsRemainDistinctActorsForSameSubject(t *testing.T) {
 	}
 }
 
+func TestVerifierCanUseInternalJWKSWithoutWeakeningExternalIssuerValidation(t *testing.T) {
+	t.Parallel()
+	keys := newTestIssuer(t)
+	authenticator, err := oidcauth.New(t.Context(), oidcauth.Config{
+		Issuer: "http://127.0.0.1:8082/realms/agent-tools", Audience: "agent-tools-gateway",
+		JWKSURL: keys.URL + "/keys", RequiredScopes: []gateway.Capability{"dev.repository.read"},
+	})
+	if err != nil {
+		t.Fatalf("create split-path verifier: %v", err)
+	}
+	claims := validClaims("http://127.0.0.1:8082/realms/agent-tools")
+	claims["scope"] = "openid dev.repository.read"
+	identity, err := authenticator.Verify(t.Context(), keys.sign(t, claims))
+	if err != nil || identity.Subject != "owner-subject-id" || identity.Actor != "coding-agent" {
+		t.Fatalf("verify externally-issued token from internal JWKS: identity=%#v err=%v", identity, err)
+	}
+	wrongIssuer := validClaims("http://keycloak:8080/realms/agent-tools")
+	wrongIssuer["scope"] = "openid dev.repository.read"
+	if _, err := authenticator.Verify(t.Context(), keys.sign(t, wrongIssuer)); err == nil {
+		t.Fatal("internal transport location was accepted as token issuer")
+	}
+}
+
 func TestInvalidOIDCTokensFailClosed(t *testing.T) {
 	t.Parallel()
 

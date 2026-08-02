@@ -12,7 +12,9 @@ The smoke path proves these outcomes:
 
 - A request without a Bearer token fails with `401` before OPA or the Protected Resource.
 - Keycloak issues signed tokens for `telegram-agent` and `coding-agent` with the same authenticated Subject and distinct Actors.
-- Both Actors may read `demo-station` and receive `state: ready` through policy revision `ticket-05`.
+- Both Actors may read `demo-station` and receive `state: ready` through policy revision `ticket-07`.
+- The Owner's coding Actor can use the exact `dev.read_repository` Tool for allowlisted `CONTEXT.md`; the isolated adapter rejects other paths.
+- The coding Actor does not discover `smart_lock.unlock`. A crafted raw MCP call that bypasses Codex's allowlist and approval prompt is still denied by OPA, produces no Effect, and emits audit evidence separating Owner Subject from `coding-agent` Actor.
 - A forged Model Interpretation claiming another user, Actor or sensitive capability cannot alter the effective Security Context.
 - A verified Telegram update maps user `4242` to `external-alice-subject-id`; the deterministic Qwen simulator may classify only the requested time window and cannot assert authority.
 - That External Subject discovers only `calendar.find_availability` and `calendar.submit_meeting_proposal`; availability reveals only bounded `start`/`end` intervals.
@@ -30,7 +32,7 @@ The gateway is available at `http://localhost:8080/mcp`, and the synthetic Teleg
 
 The gateway accepts identity only from the Bearer token after OIDC discovery and verification of its signature, issuer, audience and expiry. It maps `sub` to Subject, `azp` to Actor, intersects the signed `scope` claim with configured Turn Capabilities, and adds the deployment-bound Channel. Missing claims or scopes fail closed.
 
-Model Interpretation may travel in MCP `_meta`, but that data is not copied into the Security Context or OPA input. Keycloak uses demo-only direct access grants and checked-in credentials so the scenario is reproducible; they are not production defaults or secrets.
+Model Interpretation may travel in MCP `_meta`, but that data is not copied into the Security Context or OPA input. Telegram and the automated smoke use demo-only direct access grants and checked-in credentials so the scenario is reproducible; the Codex client uses Authorization Code with PKCE. None are production credentials.
 
 The Telegram ingress verifies its webhook secret before mapping the Telegram user ID. It obtains an OIDC token for the mapped External Subject and calls a gateway deployment bound to Channel `telegram`. The separate Qwen service returns a deterministic JSON interpretation containing only the time range used by the adapter; extra identity or capability fields are ignored. Qwen, Telegram ingress and smoke clients share no network with the calendar adapter.
 
@@ -57,6 +59,18 @@ The adapter independently accepts only `demo-front-door`, validates the semantic
 Only the Owner through the Telegram Actor and Channel can discover or execute `outlook.search_messages` and `outlook.read_message`. The optional Keycloak scope is requested only while handling an explicit command; it is neither a default scope nor persistent interaction state. Search accepts an exact query of at most 100 characters and returns at most five metadata-only matches. Read accepts one strict demo message ID.
 
 The Outlook service exposes only authenticated GET routes on the isolated network. It stores a prepared email body containing hostile instructions, but returns only `message_id`, sender, subject, timestamp and a bounded summary labelled `untrusted_content`. The body never reaches OPA, Telegram output or a model prompt. A separate internal observability network exposes only the synthetic calendar Effect count to the test-profile smoke client, proving the email read adds zero Effects without giving that client calendar or Outlook credentials.
+
+## Codex as a second MCP client
+
+[`examples/codex/config.toml`](examples/codex/config.toml) is the project configuration fragment for the live demo. Merge its table into a trusted project's `.codex/config.toml`, start the Compose gateway, then run:
+
+```sh
+codex mcp login agent_tool_guardrails
+```
+
+The gateway's `401` challenge points Codex to RFC 9728 protected-resource metadata, which in turn identifies the demo Keycloak issuer. Keycloak authenticates the Owner and issues a PKCE-bound token whose `azp` establishes Actor `coding-agent`; the gateway validates its external issuer, audience, expiry, signature and `dev.repository.read` scope. The server is marked `required`, its client-visible allowlist contains only `dev.read_repository`, and every invocation prompts locally.
+
+Those settings are a useful client defense and UX control, not the Enforcement Boundary. Removing `dev.read_repository` from `enabled_tools` narrows what Codex can use. Adding `smart_lock.unlock` locally cannot broaden authority: server discovery still filters it and a crafted direct `tools/call` is independently denied by OPA before Approval Authority or Smart Lock access. Audit stores `subject_kind=owner` separately from `actor=coding-agent` without persisting the Subject identifier.
 
 ## Test
 

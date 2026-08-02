@@ -20,6 +20,8 @@
 !scripts/**
 !docs/
 !docs/**
+!examples/
+!examples/**
 !.scratch/
 !.scratch/agent-tool-guardrails/
 !.scratch/agent-tool-guardrails/**

@@ -61,6 +61,10 @@ func TestMissingBearerTokenFailsBeforePolicyAndProtectedResource(t *testing.T) {
 		Channel:       "streamable-http",
 		Policy:        unreachablePolicy{t: t},
 		CoffeeStation: unreachableCoffeeStation{t: t},
+		OAuth: gateway.OAuthResource{
+			MetadataURL: "http://127.0.0.1:8080/.well-known/oauth-protected-resource",
+			Scopes:      []gateway.Capability{"dev.repository.read"},
+		},
 	}))
 	t.Cleanup(server.Close)
 
@@ -77,6 +81,41 @@ func TestMissingBearerTokenFailsBeforePolicyAndProtectedResource(t *testing.T) {
 
 	if response.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d", response.StatusCode, http.StatusUnauthorized)
+	}
+	if got := response.Header.Get("WWW-Authenticate"); got != `Bearer resource_metadata="http://127.0.0.1:8080/.well-known/oauth-protected-resource", scope="dev.repository.read"` {
+		t.Fatalf("WWW-Authenticate = %q", got)
+	}
+}
+
+func TestGatewayPublishesOAuthProtectedResourceMetadataForCodex(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(gateway.NewHandler(gateway.Dependencies{
+		OAuth: gateway.OAuthResource{
+			Resource:             "http://127.0.0.1:8080/mcp",
+			MetadataURL:          "http://127.0.0.1:8080/.well-known/oauth-protected-resource",
+			AuthorizationServers: []string{"http://127.0.0.1:8082/realms/agent-tools"},
+			Scopes:               []gateway.Capability{"dev.repository.read"},
+		},
+	}))
+	t.Cleanup(server.Close)
+
+	response, err := http.Get(server.URL + "/.well-known/oauth-protected-resource")
+	if err != nil {
+		t.Fatalf("get OAuth resource metadata: %v", err)
+	}
+	defer response.Body.Close()
+	var metadata struct {
+		Resource             string   `json:"resource"`
+		AuthorizationServers []string `json:"authorization_servers"`
+		ScopesSupported      []string `json:"scopes_supported"`
+	}
+	if response.StatusCode != http.StatusOK || json.NewDecoder(response.Body).Decode(&metadata) != nil {
+		t.Fatalf("OAuth resource metadata returned HTTP %d", response.StatusCode)
+	}
+	if metadata.Resource != "http://127.0.0.1:8080/mcp" || len(metadata.AuthorizationServers) != 1 ||
+		metadata.AuthorizationServers[0] != "http://127.0.0.1:8082/realms/agent-tools" ||
+		len(metadata.ScopesSupported) != 1 || metadata.ScopesSupported[0] != "dev.repository.read" {
+		t.Fatalf("OAuth resource metadata = %#v", metadata)
 	}
 }
 
@@ -180,6 +219,36 @@ func TestAuthorizedCallerCanReadCoffeeStationStatus(t *testing.T) {
 	}
 	if got := output["state"]; got != "ready" {
 		t.Errorf("state = %v, want ready", got)
+	}
+}
+
+func TestCodingActorCanUseOnlyNarrowDevelopmentToolFromCodexAllowlist(t *testing.T) {
+	t.Parallel()
+	session := connectGateway(t, gateway.Dependencies{
+		Identity: fixedIdentity{
+			Subject: "owner-subject-id", Actor: "coding-agent",
+			TurnCapabilities: []gateway.Capability{"dev.repository.read"},
+		},
+		Policy:      developmentOnlyPolicy{},
+		Development: demoDevelopmentRepository{},
+	})
+
+	listed, err := session.ListTools(t.Context(), nil)
+	if err != nil {
+		t.Fatalf("list Codex Tools: %v", err)
+	}
+	if len(listed.Tools) != 1 || listed.Tools[0].Name != "dev.read_repository" {
+		t.Fatalf("Codex-discoverable Tools = %#v", listed.Tools)
+	}
+	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+		Name: "dev.read_repository", Arguments: map[string]any{"path": "CONTEXT.md"},
+	})
+	if err != nil || result.IsError {
+		t.Fatalf("read narrow repository artifact: result=%#v err=%v", result, err)
+	}
+	output, ok := result.StructuredContent.(map[string]any)
+	if !ok || output["path"] != "CONTEXT.md" || output["content"] != "# Agent Tool Authorization\n" {
+		t.Fatalf("development Tool output = %#v", result.StructuredContent)
 	}
 }
 
@@ -1073,6 +1142,24 @@ func (outlookOnlyPolicy) Decide(_ context.Context, input gateway.PolicyInput) (g
 }
 
 func (outlookOnlyPolicy) Health(context.Context) error { return nil }
+
+type developmentOnlyPolicy struct{}
+
+func (developmentOnlyPolicy) Decide(_ context.Context, input gateway.PolicyInput) (gateway.PolicyDecision, error) {
+	return gateway.PolicyDecision{
+		Allow: input.Tool == "dev.read_repository", DecisionID: "decision-development", PolicyRevision: "ticket-07",
+	}, nil
+}
+
+func (developmentOnlyPolicy) Health(context.Context) error { return nil }
+
+type demoDevelopmentRepository struct{}
+
+func (demoDevelopmentRepository) Read(_ context.Context, path gateway.RepositoryPath) (gateway.RepositoryDocument, error) {
+	return gateway.RepositoryDocument{Path: path, Content: "# Agent Tool Authorization\n"}, nil
+}
+
+func (demoDevelopmentRepository) Health(context.Context) error { return nil }
 
 type smartLockPolicy struct{}
 

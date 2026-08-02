@@ -1,0 +1,9 @@
+[mcp_servers.agent_tool_guardrails]
+url = "http://127.0.0.1:8080/mcp"
+auth = "oauth"
+oauth = { client_id = "coding-agent" }
+oauth_resource = "http://127.0.0.1:8080/mcp"
+required = true
+scopes = ["dev.repository.read"]
+enabled_tools = ["dev.read_repository"]
+default_tools_approval_mode = "prompt"

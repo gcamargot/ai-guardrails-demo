@@ -156,6 +156,28 @@
       ]
     },
     {
+      "name": "dev.repository.read",
+      "description": "Turn Capability for the narrow coding repository Tool",
+      "protocol": "openid-connect",
+      "attributes": {"include.in.token.scope": "true", "display.on.consent.screen": "true"},
+      "protocolMappers": [
+        {
+          "name": "authenticated-subject",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-sub-mapper",
+          "consentRequired": false,
+          "config": {"access.token.claim": "true", "lightweight.claim": "true", "introspection.token.claim": "true"}
+        },
+        {
+          "name": "agent-tools-gateway-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {"included.client.audience": "agent-tools-gateway", "id.token.claim": "false", "access.token.claim": "true", "lightweight.claim": "true", "introspection.token.claim": "true"}
+        }
+      ]
+    },
+    {
       "name": "smart_lock.write",
       "description": "Short-lived Turn Capability for exact Owner smart-lock Approval",
       "protocol": "openid-connect",
@@ -204,15 +226,14 @@
       "clientId": "coding-agent",
       "name": "Coding agent demo Actor",
       "enabled": true,
-      "clientAuthenticatorType": "client-secret",
-      "secret": "coding-demo-secret",
-      "standardFlowEnabled": false,
+      "standardFlowEnabled": true,
       "directAccessGrantsEnabled": true,
       "serviceAccountsEnabled": false,
-      "publicClient": false,
+      "publicClient": true,
       "protocol": "openid-connect",
-		"defaultClientScopes": ["coffee_station.read"],
-		"optionalClientScopes": ["smart_lock.write"]
+		"defaultClientScopes": ["coffee_station.read", "dev.repository.read"],
+		"optionalClientScopes": ["smart_lock.write"],
+		"redirectUris": ["http://127.0.0.1:*/*", "http://localhost:*/*"]
     }
   ],
   "users": [

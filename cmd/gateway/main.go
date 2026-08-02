@@ -12,6 +12,7 @@ import (
 	"github.com/nahtao97/agent-tool-guardrails/internal/auditclient"
 	"github.com/nahtao97/agent-tool-guardrails/internal/calendarclient"
 	"github.com/nahtao97/agent-tool-guardrails/internal/coffeestationclient"
+	"github.com/nahtao97/agent-tool-guardrails/internal/developmentclient"
 	"github.com/nahtao97/agent-tool-guardrails/internal/envconfig"
 	"github.com/nahtao97/agent-tool-guardrails/internal/gateway"
 	"github.com/nahtao97/agent-tool-guardrails/internal/meeting"
@@ -47,6 +48,7 @@ func main() {
 		RequiredScopes:  requiredCapabilities("OIDC_REQUIRED_SCOPES"),
 		OptionalScopes:  optionalCapabilities("OIDC_OPTIONAL_SCOPES"),
 		DiscoveryClient: httpClient,
+		JWKSURL:         os.Getenv("OIDC_JWKS_URL"),
 	})
 	if err != nil {
 		log.Fatalf("initialize OIDC authentication: %v", err)
@@ -60,10 +62,17 @@ func main() {
 			environment("COFFEE_STATION_URL", "http://127.0.0.1:8081"),
 			httpClient,
 		),
-		Calendar:       calendar,
-		Outlook:        outlookclient.New(envconfig.Must("OUTLOOK_URL"), outlookCredential, httpClient),
-		SmartLock:      smartlockclient.New(envconfig.Must("SMART_LOCK_URL"), smartLockCredential, httpClient),
-		Audit:          auditclient.New(envconfig.Must("AUDIT_URL"), httpClient),
+		Calendar:    calendar,
+		Outlook:     outlookclient.New(envconfig.Must("OUTLOOK_URL"), outlookCredential, httpClient),
+		SmartLock:   smartlockclient.New(envconfig.Must("SMART_LOCK_URL"), smartLockCredential, httpClient),
+		Audit:       auditclient.New(envconfig.Must("AUDIT_URL"), httpClient),
+		Development: developmentclient.New(envconfig.Must("DEVELOPMENT_REPOSITORY_URL"), httpClient),
+		OAuth: gateway.OAuthResource{
+			Resource:             envconfig.Must("OAUTH_RESOURCE_URL"),
+			MetadataURL:          envconfig.Must("OAUTH_METADATA_URL"),
+			AuthorizationServers: []string{envconfig.Must("OAUTH_AUTHORIZATION_SERVER")},
+			Scopes:               parseCapabilities(envconfig.Must("OAUTH_SCOPES")),
+		},
 		Proposals:      meeting.NewStore(),
 		Approvals:      approvalauthority.NewClient(envconfig.Must("APPROVAL_AUTHORITY_URL"), envconfig.Must("APPROVAL_CONSUMER_CREDENTIAL"), httpClient),
 		CalendarEvents: calendar,
