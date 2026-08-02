@@ -12,37 +12,32 @@ mode=${3:-}
 test "$#" -eq 3 || usage
 
 root_dir=$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)
-results="$root_dir/docs/talk/fallback/results.jsonl"
-responses="$root_dir/docs/talk/fallback/preloaded-model-responses.jsonl"
-evidence="$root_dir/docs/talk/fallback/evidence.md"
-
-emit_results() {
-  selected_mode=$1
-  verification=$2
-  sed -e "s/\"mode\":\"recorded\"/\"mode\":\"$selected_mode\"/" \
-    -e "s/\"verification\":\"recorded\"/\"verification\":\"$verification\"/" "$results"
-}
+fallback_dir=${TALK_FALLBACK_DIR:-"$root_dir/docs/talk/fallback"}
+if test -n "${TALK_FALLBACK_DIR:-}" && test "${TALK_TEST_MODE:-}" != 1; then
+  echo "TALK_FALLBACK_DIR is available only with TALK_TEST_MODE=1" >&2
+  exit 2
+fi
+artifact_tool="$root_dir/scripts/talk-demo-artifacts.py"
 
 case "$mode" in
   preloaded)
-    test -s "$responses" || { echo "preloaded model responses are unavailable" >&2; exit 1; }
-    test "$(wc -l < "$responses" | tr -d ' ')" -eq 4 || { echo "preloaded response set is incomplete" >&2; exit 1; }
-    emit_results preloaded preloaded-responses
+    python3 "$artifact_tool" preloaded "$fallback_dir"
     ;;
   evidence)
-    test -s "$evidence" || { echo "trace-correlated evidence is unavailable" >&2; exit 1; }
-    for screenshot in 01-exploit 02-meeting 03-outlook 04-codex; do
-      test -s "$root_dir/docs/talk/fallback/$screenshot.svg" || {
-        echo "evidence screenshot is unavailable: $screenshot" >&2
-        exit 1
-      }
-    done
-    emit_results evidence screenshot-sequence
+    python3 "$artifact_tool" evidence "$fallback_dir"
     ;;
   live)
-    smoke_command=${TALK_SMOKE_COMMAND:-./scripts/smoke.sh}
+    if test -n "${TALK_SMOKE_COMMAND:-}"; then
+      if test "${TALK_TEST_MODE:-}" != 1; then
+        echo "TALK_SMOKE_COMMAND is available only with TALK_TEST_MODE=1" >&2
+        exit 2
+      fi
+      smoke_output=$(cd "$root_dir" && "$TALK_SMOKE_COMMAND")
+      printf '%s\n' "$smoke_output" | python3 "$artifact_tool" contract
+      exit 0
+    fi
     echo "Running the isolated end-to-end verification; presentation records follow on stdout." >&2
-    if ! smoke_output=$(cd "$root_dir" && "$smoke_command" 2>&1); then
+    if ! smoke_output=$(cd "$root_dir" && ./scripts/smoke.sh 2>&1); then
       printf '%s\n' "$smoke_output" >&2
       exit 1
     fi
@@ -52,7 +47,7 @@ case "$mode" in
         exit 1
       fi
     done
-    emit_results live full-smoke
+    python3 "$artifact_tool" recorded "$fallback_dir" live full-smoke
     ;;
   *) usage ;;
 esac
