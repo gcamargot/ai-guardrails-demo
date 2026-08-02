@@ -13,11 +13,9 @@ import (
 
 func main() {
 	httpClient := &http.Client{Timeout: 3 * time.Second}
-	vaultToken, err := vaultclient.ReadToken(envconfig.Must("VAULT_TOKEN_FILE"))
-	if err != nil {
-		log.Fatalf("initialize Vault identity: %v", err)
-	}
-	resetCredential, err := vaultclient.New(envconfig.Must("VAULT_URL"), vaultToken, httpClient).DemoResetCredential(context.Background())
+	resetCredential, err := vaultclient.DemoResetCredentialFromTokenFile(
+		context.Background(), envconfig.Must("VAULT_URL"), envconfig.Must("VAULT_TOKEN_FILE"), httpClient,
+	)
 	if err != nil {
 		log.Fatalf("initialize demo reset credential: %v", err)
 	}

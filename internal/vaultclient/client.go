@@ -48,6 +48,19 @@ func (client *Client) DemoResetCredential(ctx context.Context) (string, error) {
 	return client.credential(ctx, "demo-reset")
 }
 
+func DemoResetCredentialFromTokenFile(
+	ctx context.Context,
+	baseURL string,
+	tokenPath string,
+	httpClient *http.Client,
+) (string, error) {
+	token, err := ReadToken(tokenPath)
+	if err != nil {
+		return "", err
+	}
+	return New(baseURL, token, httpClient).DemoResetCredential(ctx)
+}
+
 func (client *Client) credential(ctx context.Context, resource string) (string, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, client.baseURL+"/v1/secret/data/"+resource, nil)
 	if err != nil {
