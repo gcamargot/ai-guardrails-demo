@@ -43,4 +43,19 @@ POLICY_SOURCE="$repository_root/policies" \
 
 test -s "$valid_output/agent-tools-bundle.tar.gz"
 tar -tzf "$valid_output/agent-tools-bundle.tar.gz" | grep -Fq '.signatures.json'
+
+custom_output="$test_root/custom-revision-output"
+POLICY_SOURCE="$repository_root/policies" \
+  POLICY_OUTPUT="$custom_output" \
+  POLICY_REVISION="review-42" \
+  POLICY_SIGNING_KEY="$repository_root/policies/keys/demo-signing-private.pem" \
+  POLICY_VERIFYING_KEY="$repository_root/policies/keys/demo-signing-public.pem" \
+  "$repository_root/scripts/policy-ci.sh"
+reported_revision="$(docker run --rm \
+  -v "$custom_output/agent-tools-bundle.tar.gz:/bundle.tar.gz:ro" \
+  openpolicyagent/opa:1.17.0-static eval --bundle /bundle.tar.gz --format raw data.policy_metadata.revision)"
+if test "$reported_revision" != "review-42"; then
+  echo "decision revision $reported_revision diverges from manifest revision review-42" >&2
+  exit 1
+fi
 echo "PASS policy pipeline rejects every quality-gate failure and publishes only a signed artifact"

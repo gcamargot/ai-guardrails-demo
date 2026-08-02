@@ -1,6 +1,9 @@
 package policybundle_test
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,19 +20,19 @@ func TestBundleServicePublishesAnInvalidUpdateWithoutReplacingItsLastGoodArtifac
 	directory := t.TempDir()
 	validPath := filepath.Join(directory, "valid.tar.gz")
 	invalidPath := filepath.Join(directory, "invalid.tar.gz")
-	if err := os.WriteFile(validPath, []byte("signed-ticket-08"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(invalidPath, []byte("untrusted-update"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	validBundle := writeBundle(t, validPath, "ticket-08")
+	invalidBundle := writeBundle(t, invalidPath, "review-42-untrusted-update")
 
-	server := httptest.NewServer(policybundle.NewHandler(policybundle.Config{
+	handler, err := policybundle.NewHandler(policybundle.Config{
 		ValidPath: validPath, InvalidPath: invalidPath,
-	}))
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 
-	assertBundle(t, server.URL, `"ticket-08"`, "signed-ticket-08")
+	assertBundle(t, server.URL, `"ticket-08"`, validBundle)
 
 	request, err := http.NewRequest(http.MethodPost, server.URL+"/updates/invalid-signature", nil)
 	if err != nil {
@@ -44,10 +47,10 @@ func TestBundleServicePublishesAnInvalidUpdateWithoutReplacingItsLastGoodArtifac
 		t.Fatalf("publish invalid status = %d, want 204", response.StatusCode)
 	}
 
-	assertBundle(t, server.URL, `"ticket-08-untrusted-update"`, "untrusted-update")
+	assertBundle(t, server.URL, `"review-42-untrusted-update"`, invalidBundle)
 }
 
-func assertBundle(t *testing.T, baseURL, wantETag, wantBody string) {
+func assertBundle(t *testing.T, baseURL, wantETag string, wantBody []byte) {
 	t.Helper()
 	response, err := http.Get(baseURL + "/bundles/agent-tools.tar.gz")
 	if err != nil {
@@ -58,7 +61,31 @@ func assertBundle(t *testing.T, baseURL, wantETag, wantBody string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if response.StatusCode != http.StatusOK || response.Header.Get("ETag") != wantETag || string(body) != wantBody {
+	if response.StatusCode != http.StatusOK || response.Header.Get("ETag") != wantETag || !bytes.Equal(body, wantBody) {
 		t.Fatalf("bundle response = status %d etag %q body %q", response.StatusCode, response.Header.Get("ETag"), body)
 	}
+}
+
+func writeBundle(t *testing.T, path, revision string) []byte {
+	t.Helper()
+	var buffer bytes.Buffer
+	gzipWriter := gzip.NewWriter(&buffer)
+	tarWriter := tar.NewWriter(gzipWriter)
+	manifest := []byte(`{"revision":"` + revision + `"}`)
+	if err := tarWriter.WriteHeader(&tar.Header{Name: ".manifest", Mode: 0o600, Size: int64(len(manifest))}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tarWriter.Write(manifest); err != nil {
+		t.Fatal(err)
+	}
+	if err := tarWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, buffer.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return buffer.Bytes()
 }

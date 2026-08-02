@@ -1,8 +1,15 @@
 package policybundle
 
 import (
+	"archive/tar"
+	"compress/gzip"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 )
 
@@ -12,18 +19,28 @@ type Config struct {
 }
 
 type server struct {
-	config  Config
-	mu      sync.RWMutex
-	invalid bool
+	config          Config
+	validRevision   string
+	invalidRevision string
+	mu              sync.RWMutex
+	invalid         bool
 }
 
-func NewHandler(config Config) http.Handler {
-	service := &server{config: config}
+func NewHandler(config Config) (http.Handler, error) {
+	validRevision, err := bundleRevision(config.ValidPath)
+	if err != nil {
+		return nil, fmt.Errorf("read valid bundle revision: %w", err)
+	}
+	invalidRevision, err := bundleRevision(config.InvalidPath)
+	if err != nil {
+		return nil, fmt.Errorf("read invalid bundle revision: %w", err)
+	}
+	service := &server{config: config, validRevision: validRevision, invalidRevision: invalidRevision}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", service.health)
 	mux.HandleFunc("GET /bundles/agent-tools.tar.gz", service.bundle)
 	mux.HandleFunc("POST /updates/invalid-signature", service.publishInvalid)
-	return mux
+	return mux, nil
 }
 
 func (service *server) health(response http.ResponseWriter, _ *http.Request) {
@@ -40,11 +57,12 @@ func (service *server) bundle(response http.ResponseWriter, request *http.Reques
 	service.mu.RUnlock()
 
 	path := service.config.ValidPath
-	etag := `"ticket-08"`
+	revision := service.validRevision
 	if invalid {
 		path = service.config.InvalidPath
-		etag = `"ticket-08-untrusted-update"`
+		revision = service.invalidRevision
 	}
+	etag := `"` + revision + `"`
 	if request.Header.Get("If-None-Match") == etag {
 		response.WriteHeader(http.StatusNotModified)
 		return
@@ -58,6 +76,42 @@ func (service *server) bundle(response http.ResponseWriter, request *http.Reques
 	response.Header().Set("ETag", etag)
 	response.WriteHeader(http.StatusOK)
 	_, _ = response.Write(bundle)
+}
+
+func bundleRevision(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	gzipReader, err := gzip.NewReader(file)
+	if err != nil {
+		return "", fmt.Errorf("open gzip: %w", err)
+	}
+	defer gzipReader.Close()
+	tarReader := tar.NewReader(gzipReader)
+	for {
+		header, nextErr := tarReader.Next()
+		if errors.Is(nextErr, io.EOF) {
+			return "", errors.New("bundle manifest is missing")
+		}
+		if nextErr != nil {
+			return "", fmt.Errorf("read archive: %w", nextErr)
+		}
+		if strings.TrimPrefix(header.Name, "/") != ".manifest" {
+			continue
+		}
+		var manifest struct {
+			Revision string `json:"revision"`
+		}
+		if err := json.NewDecoder(io.LimitReader(tarReader, 1<<20)).Decode(&manifest); err != nil {
+			return "", fmt.Errorf("decode manifest: %w", err)
+		}
+		if manifest.Revision == "" || strings.ContainsAny(manifest.Revision, "\"\r\n") {
+			return "", errors.New("bundle revision is invalid")
+		}
+		return manifest.Revision, nil
+	}
 }
 
 func (service *server) publishInvalid(response http.ResponseWriter, _ *http.Request) {

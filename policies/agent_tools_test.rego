@@ -75,6 +75,13 @@ test_complete_subject_actor_discovery_matrix if {
 			},
 			"expected": set(),
 		},
+		{
+			"context": {
+				"subject": "approval-authority", "actor": "internal", "channel": "approval",
+				"turn_capabilities": ["calendar.meeting.approve", "smart_lock.write"],
+			},
+			"expected": set(),
+		},
 	]
 
 	every case in cases {
@@ -154,6 +161,10 @@ test_turn_capabilities_never_expand_authority if {
 		},
 		{
 			"context": {"subject": "owner-subject-id", "actor": "telegram-agent", "channel": "telegram", "turn_capabilities": []},
+			"tool": "smart_lock.unlock", "arguments": {"device_id": "demo-front-door"},
+		},
+		{
+			"context": {"subject": "approval-authority", "actor": "internal", "channel": "approval", "turn_capabilities": ["smart_lock.write"]},
 			"tool": "smart_lock.unlock", "arguments": {"device_id": "demo-front-door"},
 		},
 	]

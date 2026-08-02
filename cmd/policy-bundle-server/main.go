@@ -9,10 +9,13 @@ import (
 )
 
 func main() {
-	handler := policybundle.NewHandler(policybundle.Config{
+	handler, err := policybundle.NewHandler(policybundle.Config{
 		ValidPath:   envconfig.Must("POLICY_BUNDLE_FILE"),
 		InvalidPath: envconfig.Must("POLICY_INVALID_BUNDLE_FILE"),
 	})
+	if err != nil {
+		log.Fatal(err)
+	}
 	log.Print("policy Bundle Service listening on :8091")
 	if err := http.ListenAndServe(":8091", handler); err != nil {
 		log.Fatal(err)

@@ -29,6 +29,11 @@ func main() {
 	opaStatusEndpoint := environment("OPA_STATUS_URL", "http://127.0.0.1:8181/v1/status")
 	invalidPolicyUpdateEndpoint := environment("POLICY_INVALID_UPDATE_URL", "http://127.0.0.1:8091/updates/invalid-signature")
 	tokenEndpoint := environment("KEYCLOAK_TOKEN_URL", "http://127.0.0.1:8082/realms/agent-tools/protocol/openid-connect/token")
+	initialPolicyStatus := readPolicyBundleStatus(ctx, opaStatusEndpoint)
+	if initialPolicyStatus.ActiveRevision == "" || initialPolicyStatus.Code != "" {
+		log.Fatalf("unexpected initial policy bundle status: %#v", initialPolicyStatus)
+	}
+	activePolicyRevision := initialPolicyStatus.ActiveRevision
 	if status := unauthenticatedStatus(ctx, endpoint); status != http.StatusUnauthorized {
 		log.Fatalf("unauthenticated MCP status = %d, want %d", status, http.StatusUnauthorized)
 	}
@@ -44,14 +49,14 @@ func main() {
 		log.Fatalf("OAuth clients were not distinguishable Actors: telegram=%q coding=%q", telegramClaims.Actor, codingClaims.Actor)
 	}
 
-	telegramDecision := callCoffeeStation(ctx, endpoint, telegramToken, nil)
+	telegramDecision := callCoffeeStation(ctx, endpoint, telegramToken, nil, activePolicyRevision)
 	codingDecision := callCoffeeStation(ctx, endpoint, codingToken, mcp.Meta{
 		"model_interpretation": map[string]any{
 			"user":         "attacker",
 			"actor":        "telegram-agent",
 			"capabilities": []string{"smart_lock.write"},
 		},
-	})
+	}, activePolicyRevision)
 	repositoryPath := callDevelopmentRepository(ctx, endpoint, codingToken)
 	externalToken := obtainToken(
 		ctx,
@@ -70,10 +75,10 @@ func main() {
 	outlookMessageID := runOutlookFlow(ctx, tokenEndpoint, telegramGatewayEndpoint, telegramWebhookEndpoint, calendarMetricsEndpoint)
 	proposalID, eventID := runMeetingFlow(ctx, telegramWebhookEndpoint)
 	lockTrace := runSmartLockFlow(ctx, tokenEndpoint, endpoint, telegramGatewayEndpoint, telegramWebhookEndpoint, smartLockMetricsEndpoint, auditRecordsEndpoint)
-	verifyRejectedPolicyUpdate(ctx, opaStatusEndpoint, invalidPolicyUpdateEndpoint, endpoint, codingToken)
+	verifyRejectedPolicyUpdate(ctx, opaStatusEndpoint, invalidPolicyUpdateEndpoint, endpoint, codingToken, activePolicyRevision)
 
 	fmt.Printf(
-		"PASS subject=%s actors=%s,%s telegram_decision=%v coding_decision=%v repository=%s available_intervals=%d outlook_message=%s outlook_effect_count=0 proposal=%s event=%s event_count=1 smart_lock_trace=%s unlock_count=1 policy_revision=ticket-08 invalid_bundle=rejected\n",
+		"PASS subject=%s actors=%s,%s telegram_decision=%v coding_decision=%v repository=%s available_intervals=%d outlook_message=%s outlook_effect_count=0 proposal=%s event=%s event_count=1 smart_lock_trace=%s unlock_count=1 policy_revision=%s invalid_bundle=rejected\n",
 		telegramClaims.Subject,
 		telegramClaims.Actor,
 		codingClaims.Actor,
@@ -85,6 +90,7 @@ func main() {
 		proposalID,
 		eventID,
 		lockTrace,
+		activePolicyRevision,
 	)
 }
 
@@ -344,7 +350,7 @@ func obtainTokenWithScopes(ctx context.Context, endpoint, clientID, clientSecret
 	return token
 }
 
-func callCoffeeStation(ctx context.Context, endpoint, token string, meta mcp.Meta) any {
+func callCoffeeStation(ctx context.Context, endpoint, token string, meta mcp.Meta, expectedRevision string) any {
 	client := mcp.NewClient(&mcp.Implementation{Name: "compose-smoke", Version: "v0.2.0"}, nil)
 	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{
 		Endpoint:             endpoint,
@@ -376,15 +382,15 @@ func callCoffeeStation(ctx context.Context, endpoint, token string, meta mcp.Met
 	if result.Meta["correlation_id"] == nil || result.Meta["correlation_id"] == "" {
 		log.Fatal("Policy Decision is missing correlation_id")
 	}
-	if result.Meta["policy_revision"] != "ticket-08" {
+	if result.Meta["policy_revision"] != expectedRevision {
 		log.Fatalf("unexpected policy revision: %v", result.Meta["policy_revision"])
 	}
 	return result.Meta["decision_id"]
 }
 
-func verifyRejectedPolicyUpdate(ctx context.Context, statusEndpoint, updateEndpoint, gatewayEndpoint, token string) {
+func verifyRejectedPolicyUpdate(ctx context.Context, statusEndpoint, updateEndpoint, gatewayEndpoint, token, expectedRevision string) {
 	initial := readPolicyBundleStatus(ctx, statusEndpoint)
-	if initial.ActiveRevision != "ticket-08" || initial.Code != "" {
+	if initial.ActiveRevision != expectedRevision || initial.Code != "" {
 		log.Fatalf("unexpected initial policy bundle status: %#v", initial)
 	}
 
@@ -404,15 +410,15 @@ func verifyRejectedPolicyUpdate(ctx context.Context, statusEndpoint, updateEndpo
 	deadline := time.Now().Add(8 * time.Second)
 	for {
 		status := readPolicyBundleStatus(ctx, statusEndpoint)
-		if status.ActiveRevision == "ticket-08" && status.Code != "" && status.LastRequest != initial.LastRequest {
+		if status.ActiveRevision == expectedRevision && status.Code != "" && status.LastRequest != initial.LastRequest {
 			break
 		}
 		if time.Now().After(deadline) {
-			log.Fatalf("OPA did not reject untrusted bundle while retaining ticket-08: %#v", status)
+			log.Fatalf("OPA did not reject untrusted bundle while retaining %s: %#v", expectedRevision, status)
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
-	callCoffeeStation(ctx, gatewayEndpoint, token, nil)
+	callCoffeeStation(ctx, gatewayEndpoint, token, nil, expectedRevision)
 }
 
 type policyBundleStatus struct {
