@@ -35,3 +35,41 @@ func TestDemoStationReportsReady(t *testing.T) {
 		t.Errorf("state = %q, want ready", got)
 	}
 }
+
+func TestMalformedOutputFixtureCanBeEnabledAndRestored(t *testing.T) {
+	server := httptest.NewServer(coffeestationserver.NewHandler())
+	t.Cleanup(server.Close)
+
+	post := func(path string) {
+		response, err := http.Post(server.URL+path, "application/json", nil)
+		if err != nil {
+			t.Fatalf("toggle malformed fixture: %v", err)
+		}
+		response.Body.Close()
+		if response.StatusCode != http.StatusNoContent {
+			t.Fatalf("toggle %s returned HTTP %d", path, response.StatusCode)
+		}
+	}
+	post("/test/output/malformed")
+	response, err := http.Get(server.URL + "/stations/demo-station/status")
+	if err != nil {
+		t.Fatalf("get malformed output: %v", err)
+	}
+	var output map[string]string
+	decodeErr := json.NewDecoder(response.Body).Decode(&output)
+	response.Body.Close()
+	if decodeErr != nil || output["state"] != "compromised" {
+		t.Fatalf("malformed output fixture=%#v err=%v", output, decodeErr)
+	}
+	post("/test/output/valid")
+	response, err = http.Get(server.URL + "/stations/demo-station/status")
+	if err != nil {
+		t.Fatalf("get restored output: %v", err)
+	}
+	output = map[string]string{}
+	decodeErr = json.NewDecoder(response.Body).Decode(&output)
+	response.Body.Close()
+	if decodeErr != nil || output["state"] != "ready" {
+		t.Fatalf("restored output=%#v err=%v", output, decodeErr)
+	}
+}

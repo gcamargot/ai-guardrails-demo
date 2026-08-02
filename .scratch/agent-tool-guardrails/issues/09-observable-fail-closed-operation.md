@@ -4,11 +4,15 @@
 
 **Blocked by:** 08 — Deliver policies as tested, signed artifacts.
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
-- [ ] Gateway spans, OPA decisions and adapter results share trace and decision identifiers.
-- [ ] Logs include identities, Tool, safe normalized arguments, rule, revision, obligations, outcome and timing.
-- [ ] Log masking removes tokens, secrets, email bodies, full prompts and sensitive event data.
-- [ ] OPA, identity or Approval Authority unavailability denies every Tool Call, including Free/Busy reads.
-- [ ] Malformed inputs and outputs are denied with an auditable reason.
-- [ ] Network checks prove that Telegram, Qwen and Codex cannot reach isolated adapters directly.
+- [x] Gateway spans, OPA decisions and adapter results share trace and decision identifiers.
+- [x] Logs include identities, Tool, safe normalized arguments, rule, revision, obligations, outcome and timing.
+- [x] Log masking removes tokens, secrets, email bodies, full prompts and sensitive event data.
+- [x] OPA, identity or Approval Authority unavailability denies every Tool Call, including Free/Busy reads.
+- [x] Malformed inputs and outputs are denied with an auditable reason.
+- [x] Network checks prove that Telegram, Qwen and Codex cannot reach isolated adapters directly.
+
+## Comments
+
+Implemented with correlated structured audit, signed OPA log masking, control-plane health gates, malformed-I/O evidence and Compose failure/network probes. Ready for human review after the full Go, Rego, policy CI and Docker smoke suites passed.

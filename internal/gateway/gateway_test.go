@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -34,6 +35,9 @@ func connectGateway(t *testing.T, dependencies gateway.Dependencies) *mcp.Client
 	}
 	if dependencies.Audit == nil {
 		dependencies.Audit = &capturingAudit{}
+	}
+	if dependencies.Approvals == nil {
+		dependencies.Approvals = healthyApprovalConsumer{}
 	}
 
 	server := httptest.NewServer(gateway.NewHandler(dependencies))
@@ -147,6 +151,45 @@ func TestInvalidBearerTokenFailsBeforePolicyAndProtectedResource(t *testing.T) {
 	}
 }
 
+func TestUnavailableIdentityFailsClosedWithSafeAudit(t *testing.T) {
+	t.Parallel()
+
+	audit := &capturingAudit{}
+	server := httptest.NewServer(gateway.NewHandler(gateway.Dependencies{
+		Identity:      unavailableIdentity{},
+		Channel:       "telegram",
+		Policy:        unreachablePolicy{t: t},
+		CoffeeStation: unreachableCoffeeStation{t: t},
+		Audit:         audit,
+	}))
+	t.Cleanup(server.Close)
+
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL+"/mcp", strings.NewReader(
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"calendar.find_availability","arguments":{"start":"2026-08-03T09:00:00Z","end":"2026-08-03T12:00:00Z"}}}`,
+	))
+	if err != nil {
+		t.Fatalf("create Tool Call: %v", err)
+	}
+	request.Header.Set("Authorization", "Bearer TOKEN_MUST_NOT_BE_LOGGED")
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("call gateway with unavailable identity: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("identity unavailable status=%d", response.StatusCode)
+	}
+	if len(audit.records) != 1 || audit.records[0].Outcome != "deny" || audit.records[0].Reason != "identity_unavailable" ||
+		audit.records[0].Tool != "calendar.find_availability" {
+		t.Fatalf("identity-unavailable audit=%#v", audit.records)
+	}
+	encoded, _ := json.Marshal(audit.records)
+	if strings.Contains(string(encoded), "TOKEN_MUST_NOT_BE_LOGGED") {
+		t.Fatalf("identity audit leaked Bearer token: %s", encoded)
+	}
+}
+
 func TestEffectiveSecurityContextComesFromBearerTokenAndChannelBinding(t *testing.T) {
 	t.Parallel()
 
@@ -188,6 +231,56 @@ func TestEffectiveSecurityContextComesFromBearerTokenAndChannelBinding(t *testin
 	if got.Subject != want.Subject || got.Actor != want.Actor || got.Channel != want.Channel ||
 		len(got.TurnCapabilities) != 1 || got.TurnCapabilities[0] != want.TurnCapabilities[0] {
 		t.Fatalf("effective Security Context = %#v, want %#v", got, want)
+	}
+}
+
+func TestToolCallProducesCorrelatedSafeOperationalAudit(t *testing.T) {
+	t.Parallel()
+
+	audit := &capturingAudit{}
+	station := &observedCoffeeStation{}
+	session := connectGateway(t, gateway.Dependencies{
+		Identity: fixedIdentity{
+			Subject:          "owner-subject-id",
+			Actor:            "coding-agent",
+			TurnCapabilities: []gateway.Capability{"coffee_station.read"},
+		},
+		Policy:        observablePolicy{},
+		CoffeeStation: station,
+		Approvals:     healthyApprovalConsumer{},
+		Audit:         audit,
+	})
+
+	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+		Meta: mcp.Meta{"prompt": "SECRET_PROMPT_MUST_NOT_BE_LOGGED", "authorization": "Bearer secret-token"},
+		Name: "coffee_station.get_status",
+		Arguments: map[string]any{
+			"station_id": "demo-station",
+		},
+	})
+	if err != nil || result.IsError {
+		t.Fatalf("observable Tool Call failed: result=%#v err=%v", result, err)
+	}
+	if len(audit.records) != 1 {
+		t.Fatalf("audit records=%#v, want one final Tool Call record", audit.records)
+	}
+	record := audit.records[0]
+	if record.TraceID == "" || record.TraceID != station.TraceID || record.CorrelationID != station.CorrelationID ||
+		record.DecisionID != station.DecisionID {
+		t.Fatalf("correlation request/audit/adapter = %#v / %#v", record, station)
+	}
+	if record.SubjectKind != "owner" || record.Actor != "coding-agent" || record.Channel != "streamable-http" ||
+		record.Tool != "coffee_station.get_status" || record.Rule != "owner_demo_station" ||
+		record.PolicyRevision != "ticket-09" || record.Outcome != "allow" || record.DurationMicros < 0 {
+		t.Fatalf("operational audit record=%#v", record)
+	}
+	wantArguments := map[string]any{"station_id": "demo-station"}
+	if !reflect.DeepEqual(record.SafeArguments, wantArguments) || !reflect.DeepEqual(record.Obligations, []gateway.Obligation{}) {
+		t.Fatalf("safe arguments/obligations=%#v/%#v", record.SafeArguments, record.Obligations)
+	}
+	encoded, _ := json.Marshal(record)
+	if strings.Contains(string(encoded), "SECRET_PROMPT_MUST_NOT_BE_LOGGED") || strings.Contains(string(encoded), "secret-token") {
+		t.Fatalf("audit leaked prompt or token: %s", encoded)
 	}
 }
 
@@ -313,6 +406,43 @@ func TestExternalSubjectDiscoversOnlyAvailabilityTool(t *testing.T) {
 	}
 	if len(result.Tools) != 1 || result.Tools[0].Name != "calendar.find_availability" {
 		t.Fatalf("discovered Tools = %#v, want only calendar.find_availability", result.Tools)
+	}
+}
+
+func TestUnavailableApprovalAuthorityFailsClosedBeforeFreeBusy(t *testing.T) {
+	t.Parallel()
+
+	audit := &capturingAudit{}
+	session := connectGateway(t, gateway.Dependencies{
+		Identity: fixedIdentity{
+			Subject:          "external-alice-subject-id",
+			Actor:            "telegram-agent",
+			TurnCapabilities: []gateway.Capability{"calendar.free_busy.read"},
+		},
+		Channel:       "telegram",
+		Policy:        unreachablePolicy{t: t},
+		CoffeeStation: readyCoffeeStation{},
+		Calendar:      unreachableCalendar{t: t},
+		Approvals:     unavailableApprovalConsumer{},
+		Audit:         audit,
+	})
+
+	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+		Name: "calendar.find_availability",
+		Arguments: map[string]any{
+			"start": "2026-08-03T09:00:00Z",
+			"end":   "2026-08-03T12:00:00Z",
+		},
+	})
+	if err != nil {
+		t.Fatalf("fail-closed Free/Busy returned protocol error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("Free/Busy succeeded while Approval Authority was unavailable")
+	}
+	if len(audit.records) != 1 || audit.records[0].Outcome != "deny" ||
+		audit.records[0].Reason != "approval_authority_unavailable" || audit.records[0].TraceID == "" {
+		t.Fatalf("fail-closed audit=%#v", audit.records)
 	}
 }
 
@@ -881,6 +1011,31 @@ func TestUnknownInputFieldIsRejected(t *testing.T) {
 	}
 }
 
+func TestMalformedAdapterOutputIsDeniedWithAuditableReason(t *testing.T) {
+	t.Parallel()
+
+	audit := &capturingAudit{}
+	session := connectGateway(t, gateway.Dependencies{
+		Policy:        observablePolicy{},
+		CoffeeStation: invalidCoffeeStation{},
+		Audit:         audit,
+	})
+	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+		Name:      "coffee_station.get_status",
+		Arguments: map[string]any{"station_id": "demo-station"},
+	})
+	if err != nil {
+		t.Fatalf("malformed adapter output returned protocol error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("malformed adapter output crossed the Enforcement Boundary")
+	}
+	if len(audit.records) != 1 || audit.records[0].Outcome != "deny" || audit.records[0].Reason != "malformed_output" ||
+		audit.records[0].DecisionID != "decision-observable" {
+		t.Fatalf("malformed-output audit=%#v", audit.records)
+	}
+}
+
 func TestInvalidCoffeeStationResponseIsRejected(t *testing.T) {
 	t.Parallel()
 
@@ -1026,6 +1181,17 @@ func (allowPolicy) Decide(context.Context, gateway.PolicyInput) (gateway.PolicyD
 
 func (allowPolicy) Health(context.Context) error { return nil }
 
+type observablePolicy struct{}
+
+func (observablePolicy) Decide(_ context.Context, input gateway.PolicyInput) (gateway.PolicyDecision, error) {
+	return gateway.PolicyDecision{
+		Allow: true, CorrelationID: input.CorrelationID, DecisionID: "decision-observable",
+		Obligations: []gateway.Obligation{}, PolicyRevision: "ticket-09", Reason: "owner_demo_station",
+	}, nil
+}
+
+func (observablePolicy) Health(context.Context) error { return nil }
+
 type denyPolicy struct{}
 
 func (denyPolicy) Decide(context.Context, gateway.PolicyInput) (gateway.PolicyDecision, error) {
@@ -1060,6 +1226,19 @@ func (readyCoffeeStation) Status(context.Context, gateway.StationID) (gateway.Co
 }
 
 func (readyCoffeeStation) Health(context.Context) error { return nil }
+
+type observedCoffeeStation struct {
+	TraceID       string
+	CorrelationID gateway.CorrelationID
+	DecisionID    string
+}
+
+func (station *observedCoffeeStation) Status(ctx context.Context, _ gateway.StationID) (gateway.CoffeeStationStatus, error) {
+	station.TraceID, station.CorrelationID, station.DecisionID = gateway.ToolCallCorrelation(ctx)
+	return gateway.CoffeeStationStatus{StationID: "demo-station", State: "ready"}, nil
+}
+
+func (*observedCoffeeStation) Health(context.Context) error { return nil }
 
 type invalidCoffeeStation struct{}
 
@@ -1100,6 +1279,12 @@ type rejectingIdentity struct{}
 
 func (rejectingIdentity) Verify(context.Context, string) (gateway.TrustedIdentity, error) {
 	return gateway.TrustedIdentity{}, errors.New("token rejected")
+}
+
+type unavailableIdentity struct{}
+
+func (unavailableIdentity) Verify(context.Context, string) (gateway.TrustedIdentity, error) {
+	return gateway.TrustedIdentity{}, gateway.ErrIdentityUnavailable
 }
 
 type capturingPolicy struct {
@@ -1300,6 +1485,15 @@ func (availableCalendar) FindAvailability(context.Context, freebusy.Window) (fre
 }
 
 func (availableCalendar) Health(context.Context) error { return nil }
+
+type unreachableCalendar struct{ t *testing.T }
+
+func (calendar unreachableCalendar) FindAvailability(context.Context, freebusy.Window) (freebusy.View, error) {
+	calendar.t.Fatal("denied Tool Call reached the calendar adapter")
+	return freebusy.View{}, nil
+}
+
+func (unreachableCalendar) Health(context.Context) error { return nil }
 
 type outOfBoundsCalendar struct{}
 

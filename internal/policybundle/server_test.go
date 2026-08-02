@@ -48,6 +48,20 @@ func TestBundleServicePublishesAnInvalidUpdateWithoutReplacingItsLastGoodArtifac
 	}
 
 	assertBundle(t, server.URL, `"review-42-untrusted-update"`, invalidBundle)
+
+	request, err = http.NewRequest(http.MethodPost, server.URL+"/updates/valid", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err = server.Client().Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("restore valid status = %d, want 204", response.StatusCode)
+	}
+	assertBundle(t, server.URL, `"ticket-08"`, validBundle)
 }
 
 func assertBundle(t *testing.T, baseURL, wantETag string, wantBody []byte) {

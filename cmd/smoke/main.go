@@ -28,7 +28,13 @@ func main() {
 	auditRecordsEndpoint := environment("AUDIT_RECORDS_URL", "http://127.0.0.1:8089/records")
 	opaStatusEndpoint := environment("OPA_STATUS_URL", "http://127.0.0.1:8181/v1/status")
 	invalidPolicyUpdateEndpoint := environment("POLICY_INVALID_UPDATE_URL", "http://127.0.0.1:8091/updates/invalid-signature")
+	validPolicyUpdateEndpoint := environment("POLICY_VALID_UPDATE_URL", "http://127.0.0.1:8091/updates/valid")
 	tokenEndpoint := environment("KEYCLOAK_TOKEN_URL", "http://127.0.0.1:8082/realms/agent-tools/protocol/openid-connect/token")
+	if failureMode := os.Getenv("FAILURE_MODE"); failureMode != "" {
+		verifyFailClosedMode(ctx, failureMode, endpoint, telegramGatewayEndpoint, tokenEndpoint, auditRecordsEndpoint, calendarMetricsEndpoint)
+		fmt.Printf("PASS fail_closed=%s effect_count=0\n", failureMode)
+		return
+	}
 	initialPolicyStatus := readPolicyBundleStatus(ctx, opaStatusEndpoint)
 	if initialPolicyStatus.ActiveRevision == "" || initialPolicyStatus.Code != "" {
 		log.Fatalf("unexpected initial policy bundle status: %#v", initialPolicyStatus)
@@ -75,7 +81,7 @@ func main() {
 	outlookMessageID := runOutlookFlow(ctx, tokenEndpoint, telegramGatewayEndpoint, telegramWebhookEndpoint, calendarMetricsEndpoint)
 	proposalID, eventID := runMeetingFlow(ctx, telegramWebhookEndpoint)
 	lockTrace := runSmartLockFlow(ctx, tokenEndpoint, endpoint, telegramGatewayEndpoint, telegramWebhookEndpoint, smartLockMetricsEndpoint, auditRecordsEndpoint)
-	verifyRejectedPolicyUpdate(ctx, opaStatusEndpoint, invalidPolicyUpdateEndpoint, endpoint, codingToken, activePolicyRevision)
+	verifyRejectedPolicyUpdate(ctx, opaStatusEndpoint, invalidPolicyUpdateEndpoint, validPolicyUpdateEndpoint, endpoint, codingToken, activePolicyRevision)
 
 	fmt.Printf(
 		"PASS subject=%s actors=%s,%s telegram_decision=%v coding_decision=%v repository=%s available_intervals=%d outlook_message=%s outlook_effect_count=0 proposal=%s event=%s event_count=1 smart_lock_trace=%s unlock_count=1 policy_revision=%s invalid_bundle=rejected\n",
@@ -92,6 +98,93 @@ func main() {
 		lockTrace,
 		activePolicyRevision,
 	)
+}
+
+func verifyFailClosedMode(ctx context.Context, mode, generalEndpoint, telegramEndpoint, tokenEndpoint, auditEndpoint, calendarMetricsEndpoint string) {
+	before := calendarEventCount(ctx, calendarMetricsEndpoint)
+	switch mode {
+	case "identity":
+		token := obtainToken(ctx, tokenEndpoint, "coding-agent", "", "owner", "owner-demo-password")
+		identityFixture := environment("IDENTITY_FAULT_URL", "http://127.0.0.1:8082/test/identity")
+		postNoContent(ctx, identityFixture+"/unavailable")
+		defer postNoContent(ctx, identityFixture+"/available")
+		client := mcp.NewClient(&mcp.Implementation{Name: "identity-failure-smoke", Version: "v1.0.0"}, nil)
+		session, err := client.Connect(ctx, &mcp.StreamableClientTransport{
+			Endpoint: generalEndpoint, DisableStandaloneSSE: true,
+			HTTPClient: oauth2.NewClient(ctx, oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token})),
+		}, nil)
+		if err == nil {
+			_ = session.Close()
+			log.Fatal("MCP connected while identity control plane was unavailable")
+		}
+		waitForAuditReason(ctx, auditEndpoint, "identity_unavailable")
+	case "opa", "approval":
+		token := obtainToken(ctx, tokenEndpoint, "telegram-agent", "telegram-demo-secret", "external-alice", "external-demo-password")
+		session := connectMCP(ctx, telegramEndpoint, token)
+		result, err := session.CallTool(ctx, &mcp.CallToolParams{
+			Name:      "calendar.find_availability",
+			Arguments: map[string]any{"start": "2026-08-03T09:00:00Z", "end": "2026-08-03T12:00:00Z"},
+		})
+		_ = session.Close()
+		if err == nil && !result.IsError {
+			log.Fatalf("Free/Busy succeeded while %s was unavailable", mode)
+		}
+		reason := "policy_unavailable"
+		if mode == "approval" {
+			reason = "approval_authority_unavailable"
+		}
+		waitForAuditReason(ctx, auditEndpoint, reason)
+	case "malformed-output":
+		token := obtainToken(ctx, tokenEndpoint, "coding-agent", "", "owner", "owner-demo-password")
+		session := connectMCP(ctx, generalEndpoint, token)
+		result, err := session.CallTool(ctx, &mcp.CallToolParams{
+			Name: "coffee_station.get_status", Arguments: map[string]any{"station_id": "demo-station"},
+		})
+		_ = session.Close()
+		if err == nil && !result.IsError {
+			log.Fatal("malformed adapter output crossed the Enforcement Boundary")
+		}
+		waitForAuditReason(ctx, auditEndpoint, "malformed_output")
+	default:
+		log.Fatalf("unknown FAILURE_MODE %q", mode)
+	}
+	if after := calendarEventCount(ctx, calendarMetricsEndpoint); after != before {
+		log.Fatalf("fail-closed verification produced an Effect: before=%d after=%d", before, after)
+	}
+}
+
+func postNoContent(ctx context.Context, endpoint string) {
+	request, _ := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		log.Fatalf("POST %s: %v", endpoint, err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		log.Fatalf("POST %s returned HTTP %d", endpoint, response.StatusCode)
+	}
+}
+
+func waitForAuditReason(ctx context.Context, endpoint, reason string) {
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		request, _ := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		response, err := http.DefaultClient.Do(request)
+		if err == nil {
+			var records []map[string]any
+			decodeErr := json.NewDecoder(response.Body).Decode(&records)
+			response.Body.Close()
+			if decodeErr == nil {
+				for _, record := range records {
+					if record["reason"] == reason && record["trace_id"] != "" && record["correlation_id"] != "" {
+						return
+					}
+				}
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	log.Fatalf("no correlated audit record with reason %q", reason)
 }
 
 func runSmartLockFlow(ctx context.Context, tokenEndpoint, generalGatewayEndpoint, telegramGatewayEndpoint, webhookEndpoint, metricsEndpoint, auditEndpoint string) string {
@@ -388,13 +481,13 @@ func callCoffeeStation(ctx context.Context, endpoint, token string, meta mcp.Met
 	return result.Meta["decision_id"]
 }
 
-func verifyRejectedPolicyUpdate(ctx context.Context, statusEndpoint, updateEndpoint, gatewayEndpoint, token, expectedRevision string) {
+func verifyRejectedPolicyUpdate(ctx context.Context, statusEndpoint, invalidUpdateEndpoint, validUpdateEndpoint, gatewayEndpoint, token, expectedRevision string) {
 	initial := readPolicyBundleStatus(ctx, statusEndpoint)
 	if initial.ActiveRevision != expectedRevision || initial.Code != "" {
 		log.Fatalf("unexpected initial policy bundle status: %#v", initial)
 	}
 
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, updateEndpoint, nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, invalidUpdateEndpoint, nil)
 	if err != nil {
 		log.Fatalf("create invalid policy update request: %v", err)
 	}
@@ -419,6 +512,18 @@ func verifyRejectedPolicyUpdate(ctx context.Context, statusEndpoint, updateEndpo
 		time.Sleep(250 * time.Millisecond)
 	}
 	callCoffeeStation(ctx, gatewayEndpoint, token, nil, expectedRevision)
+	postNoContent(ctx, validUpdateEndpoint)
+	deadline = time.Now().Add(8 * time.Second)
+	for {
+		status := readPolicyBundleStatus(ctx, statusEndpoint)
+		if status.ActiveRevision == expectedRevision && status.Code == "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			log.Fatalf("OPA did not reload restored valid bundle %s: %#v", expectedRevision, status)
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
 }
 
 type policyBundleStatus struct {

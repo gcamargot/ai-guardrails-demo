@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 
 	"github.com/nahtao97/agent-tool-guardrails/internal/auditclient"
@@ -17,9 +18,10 @@ func TestCollectorStoresOnlyTypedNonSensitiveAuditRecords(t *testing.T) {
 	t.Cleanup(server.Close)
 	client := auditclient.New(server.URL, server.Client())
 	record := gateway.AuditRecord{
-		TraceID: "smart-lock-trace-1", DecisionID: "decision-1", SubjectKind: "owner",
-		Actor: "telegram-agent", Channel: "telegram", Operation: "execute", Tool: "smart_lock.unlock",
-		Outcome: "allow", Reason: "owner_exact_smart_lock",
+		TraceID: "trace-1", CorrelationID: "correlation-1", DecisionID: "decision-1", SubjectKind: "owner",
+		Actor: "coding-agent", Channel: "streamable-http", Operation: "execute", Tool: "coffee_station.get_status",
+		Outcome: "allow", Reason: "owner_demo_station", Rule: "owner_demo_station", PolicyRevision: "ticket-09",
+		Obligations: []gateway.Obligation{}, SafeArguments: map[string]any{"station_id": "demo-station"}, DurationMicros: 42,
 	}
 	if err := client.Record(context.Background(), record); err != nil {
 		t.Fatalf("record audit: %v", err)
@@ -34,7 +36,22 @@ func TestCollectorStoresOnlyTypedNonSensitiveAuditRecords(t *testing.T) {
 	if err := json.NewDecoder(response.Body).Decode(&records); err != nil {
 		t.Fatalf("decode audit records: %v", err)
 	}
-	if len(records) != 1 || records[0] != record {
+	if len(records) != 1 || !reflect.DeepEqual(records[0], record) {
 		t.Fatalf("audit records = %#v, want %#v", records, record)
+	}
+}
+
+func TestCollectorRejectsSensitiveArgumentKeys(t *testing.T) {
+	server := httptest.NewServer(auditserver.NewHandler())
+	t.Cleanup(server.Close)
+	client := auditclient.New(server.URL, server.Client())
+	record := gateway.AuditRecord{
+		TraceID: "trace-1", CorrelationID: "correlation-1", DecisionID: "decision-1", SubjectKind: "owner",
+		Actor: "coding-agent", Channel: "streamable-http", Operation: "execute", Tool: "coffee_station.get_status",
+		Outcome: "allow", Reason: "owner_demo_station", Rule: "owner_demo_station", PolicyRevision: "ticket-09",
+		Obligations: []gateway.Obligation{}, SafeArguments: map[string]any{"token": "must-not-be-stored"}, DurationMicros: 42,
+	}
+	if err := client.Record(context.Background(), record); err == nil {
+		t.Fatal("collector accepted a sensitive argument key")
 	}
 }

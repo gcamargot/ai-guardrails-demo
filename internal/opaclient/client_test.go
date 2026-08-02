@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/nahtao97/agent-tool-guardrails/internal/approvalauthority"
 	"github.com/nahtao97/agent-tool-guardrails/internal/gateway"
 	"github.com/nahtao97/agent-tool-guardrails/internal/opaclient"
 	"golang.org/x/oauth2"
@@ -51,6 +52,8 @@ func TestGatewayUsesOPADecisionToAllowToolCall(t *testing.T) {
 		Channel:       "streamable-http",
 		Policy:        opaclient.New(policyServer.URL, policyServer.Client()),
 		CoffeeStation: readyCoffeeStation{},
+		Approvals:     healthyApprovals{},
+		Audit:         discardAudit{},
 	}))
 	t.Cleanup(server.Close)
 
@@ -98,3 +101,16 @@ func (readyCoffeeStation) Status(context.Context, gateway.StationID) (gateway.Co
 }
 
 func (readyCoffeeStation) Health(context.Context) error { return nil }
+
+type healthyApprovals struct{}
+
+func (healthyApprovals) ConsumeExact(context.Context, string, approvalauthority.Binding) (approvalauthority.Consumption, error) {
+	return approvalauthority.Consumption{}, nil
+}
+
+func (healthyApprovals) Health(context.Context) error { return nil }
+
+type discardAudit struct{}
+
+func (discardAudit) Record(context.Context, gateway.AuditRecord) error { return nil }
+func (discardAudit) Health(context.Context) error                      { return nil }

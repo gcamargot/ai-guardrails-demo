@@ -130,6 +130,24 @@ func TestVerifierCanUseInternalJWKSWithoutWeakeningExternalIssuerValidation(t *t
 	}
 }
 
+func TestAuthenticatorHealthFailsWhenIdentityControlPlaneIsUnavailable(t *testing.T) {
+	issuer := newTestIssuer(t)
+	authenticator, err := oidcauth.New(t.Context(), oidcauth.Config{
+		Issuer: issuer.URL, Audience: "agent-tools-gateway", JWKSURL: issuer.URL + "/keys",
+		RequiredScopes: []gateway.Capability{"coffee_station.read"}, DiscoveryClient: issuer.Client(),
+	})
+	if err != nil {
+		t.Fatalf("create authenticator: %v", err)
+	}
+	if err := authenticator.Health(t.Context()); err != nil {
+		t.Fatalf("healthy identity control plane: %v", err)
+	}
+	issuer.Close()
+	if err := authenticator.Health(t.Context()); err == nil {
+		t.Fatal("unavailable identity control plane reported healthy")
+	}
+}
+
 func TestInvalidOIDCTokensFailClosed(t *testing.T) {
 	t.Parallel()
 

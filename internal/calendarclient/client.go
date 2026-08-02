@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/nahtao97/agent-tool-guardrails/internal/freebusy"
+	"github.com/nahtao97/agent-tool-guardrails/internal/gateway"
 	"github.com/nahtao97/agent-tool-guardrails/internal/meeting"
 )
 
@@ -40,6 +41,7 @@ func (client *Client) FindAvailability(ctx context.Context, query freebusy.Windo
 		return freebusy.View{}, fmt.Errorf("create calendar request: %w", err)
 	}
 	request.Header.Set("Authorization", "Bearer "+client.credential)
+	gateway.ApplyToolCallCorrelation(ctx, request)
 	response, err := client.httpClient.Do(request)
 	if err != nil {
 		return freebusy.View{}, fmt.Errorf("query calendar: %w", err)
@@ -68,6 +70,7 @@ func (client *Client) CreateEvent(ctx context.Context, arguments meeting.EventAr
 	}
 	request.Header.Set("Authorization", "Bearer "+client.credential)
 	request.Header.Set("Content-Type", "application/json")
+	gateway.ApplyToolCallCorrelation(ctx, request)
 	response, err := client.httpClient.Do(request)
 	if err != nil {
 		return meeting.Event{}, fmt.Errorf("create calendar event: %w", err)

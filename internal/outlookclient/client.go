@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/nahtao97/agent-tool-guardrails/internal/gateway"
 	"github.com/nahtao97/agent-tool-guardrails/internal/outlook"
 )
 
@@ -90,6 +91,7 @@ func (client *Client) request(ctx context.Context, endpoint string) (*http.Reque
 		return nil, fmt.Errorf("create Outlook request: %w", err)
 	}
 	request.Header.Set("Authorization", "Bearer "+client.credential)
+	gateway.ApplyToolCallCorrelation(ctx, request)
 	return request, nil
 }
 

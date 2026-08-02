@@ -37,6 +37,7 @@ func (client *Client) Status(ctx context.Context, stationID gateway.StationID) (
 	if err != nil {
 		return gateway.CoffeeStationStatus{}, fmt.Errorf("create coffee station request: %w", err)
 	}
+	gateway.ApplyToolCallCorrelation(ctx, request)
 	response, err := client.httpClient.Do(request)
 	if err != nil {
 		return gateway.CoffeeStationStatus{}, fmt.Errorf("query coffee station: %w", err)

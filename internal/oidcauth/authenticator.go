@@ -24,6 +24,8 @@ type Authenticator struct {
 	verifier       *oidc.IDTokenVerifier
 	requiredScopes []gateway.Capability
 	optionalScopes []gateway.Capability
+	healthURL      string
+	httpClient     *http.Client
 }
 
 func New(ctx context.Context, config Config) (*Authenticator, error) {
@@ -47,7 +49,39 @@ func New(ctx context.Context, config Config) (*Authenticator, error) {
 		verifier:       verifier,
 		requiredScopes: append([]gateway.Capability(nil), config.RequiredScopes...),
 		optionalScopes: append([]gateway.Capability(nil), config.OptionalScopes...),
+		healthURL:      identityHealthURL(config),
+		httpClient:     identityHTTPClient(config.DiscoveryClient),
 	}, nil
+}
+
+func identityHealthURL(config Config) string {
+	if config.JWKSURL != "" {
+		return config.JWKSURL
+	}
+	return strings.TrimRight(config.Issuer, "/") + "/.well-known/openid-configuration"
+}
+
+func identityHTTPClient(client *http.Client) *http.Client {
+	if client != nil {
+		return client
+	}
+	return http.DefaultClient
+}
+
+func (authenticator *Authenticator) Health(ctx context.Context) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, authenticator.healthURL, nil)
+	if err != nil {
+		return fmt.Errorf("create identity health request: %w", err)
+	}
+	response, err := authenticator.httpClient.Do(request)
+	if err != nil {
+		return fmt.Errorf("query identity control plane: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("identity control plane returned HTTP %d", response.StatusCode)
+	}
+	return nil
 }
 
 func (authenticator *Authenticator) Verify(ctx context.Context, rawToken string) (gateway.TrustedIdentity, error) {

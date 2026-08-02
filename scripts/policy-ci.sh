@@ -57,12 +57,13 @@ case "$policy_revision" in
 esac
 
 test -f "$policy_source/agent_tools.rego"
+test -f "$policy_source/log_mask.rego"
 test -f "$policy_signing_key"
 test -f "$policy_verifying_key"
 test -f "$policy_untrusted_key"
 
 mkdir -p "$policy_workspace/bundle" "$policy_workspace/output" "$policy_workspace/verified"
-cp "$policy_source/agent_tools.rego" "$policy_workspace/bundle/"
+cp "$policy_source/agent_tools.rego" "$policy_source/log_mask.rego" "$policy_workspace/bundle/"
 printf '{"policy_metadata":{"revision":"%s"}}\n' "$policy_revision" >"$policy_workspace/bundle/data.json"
 
 echo "policy-ci: bundle"

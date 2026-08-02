@@ -1,10 +1,12 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -62,13 +64,20 @@ type IdentityVerifier interface {
 	Verify(context.Context, string) (TrustedIdentity, error)
 }
 
+type identityHealth interface {
+	Health(context.Context) error
+}
+
 type IdentityVerifierFunc func(context.Context, string) (TrustedIdentity, error)
+
+var ErrIdentityUnavailable = errors.New("identity service unavailable")
 
 func (verify IdentityVerifierFunc) Verify(ctx context.Context, token string) (TrustedIdentity, error) {
 	return verify(ctx, token)
 }
 
 type PolicyInput struct {
+	TraceID         string          `json:"trace_id"`
 	CorrelationID   CorrelationID   `json:"correlation_id"`
 	SecurityContext SecurityContext `json:"security_context"`
 	Operation       PolicyOperation `json:"operation"`
@@ -86,16 +95,21 @@ type PolicyDecision struct {
 }
 
 type AuditRecord struct {
-	TraceID       string          `json:"trace_id,omitempty"`
-	CorrelationID CorrelationID   `json:"correlation_id,omitempty"`
-	DecisionID    string          `json:"decision_id"`
-	SubjectKind   string          `json:"subject_kind"`
-	Actor         Actor           `json:"actor"`
-	Channel       Channel         `json:"channel"`
-	Operation     PolicyOperation `json:"operation"`
-	Tool          ToolName        `json:"tool"`
-	Outcome       string          `json:"outcome"`
-	Reason        string          `json:"reason"`
+	TraceID        string          `json:"trace_id,omitempty"`
+	CorrelationID  CorrelationID   `json:"correlation_id,omitempty"`
+	DecisionID     string          `json:"decision_id"`
+	SubjectKind    string          `json:"subject_kind"`
+	Actor          Actor           `json:"actor"`
+	Channel        Channel         `json:"channel"`
+	Operation      PolicyOperation `json:"operation"`
+	Tool           ToolName        `json:"tool"`
+	Outcome        string          `json:"outcome"`
+	Reason         string          `json:"reason"`
+	SafeArguments  map[string]any  `json:"safe_arguments"`
+	Rule           string          `json:"rule"`
+	PolicyRevision string          `json:"policy_revision"`
+	Obligations    []Obligation    `json:"obligations"`
+	DurationMicros int64           `json:"duration_micros"`
 }
 
 type AuditSink interface {
@@ -250,7 +264,7 @@ func NewHandler(deps Dependencies) http.Handler {
 	)
 
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", authenticate(deps.Identity, deps.OAuth, mcpHandler))
+	mux.Handle("/mcp", authenticate(deps, mcpHandler))
 	mux.HandleFunc("GET /.well-known/oauth-protected-resource", oauthResourceMetadata(deps.OAuth))
 	mux.HandleFunc("GET /healthz", healthHandler(deps))
 	return mux
@@ -258,23 +272,64 @@ func NewHandler(deps Dependencies) http.Handler {
 
 type identityContextKey struct{}
 
-func authenticate(identity IdentityVerifier, oauth OAuthResource, next http.Handler) http.Handler {
+func authenticate(deps Dependencies, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		const prefix = "Bearer "
 		authorization := request.Header.Get("Authorization")
-		if identity == nil || !strings.HasPrefix(authorization, prefix) || len(authorization) == len(prefix) {
-			writeOAuthChallenge(response, oauth)
+		if deps.Identity == nil || !strings.HasPrefix(authorization, prefix) || len(authorization) == len(prefix) {
+			writeOAuthChallenge(response, deps.OAuth)
 			http.Error(response, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		trusted, err := identity.Verify(request.Context(), strings.TrimPrefix(authorization, prefix))
+		started := time.Now()
+		if health, ok := deps.Identity.(identityHealth); ok {
+			if err := health.Health(request.Context()); err != nil {
+				auditIdentityUnavailable(request, deps, started, err)
+				writeOAuthChallenge(response, deps.OAuth)
+				http.Error(response, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+		}
+		trusted, err := deps.Identity.Verify(request.Context(), strings.TrimPrefix(authorization, prefix))
 		if err != nil {
-			writeOAuthChallenge(response, oauth)
+			if errors.Is(err, ErrIdentityUnavailable) {
+				auditIdentityUnavailable(request, deps, started, err)
+			}
+			writeOAuthChallenge(response, deps.OAuth)
 			http.Error(response, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		next.ServeHTTP(response, request.WithContext(context.WithValue(request.Context(), identityContextKey{}, trusted)))
 	})
+}
+
+func auditIdentityUnavailable(request *http.Request, deps Dependencies, started time.Time, identityErr error) {
+	tool, arguments := unauthenticatedToolCall(request)
+	ctx, observation := beginToolCall(request.Context(), tool, arguments)
+	observeFailure(ctx, "identity_unavailable")
+	_ = recordOperationalAudit(ctx, deps.Audit, SecurityContext{Actor: "unknown", Channel: deps.Channel}, observation, nil, identityErr, time.Since(started))
+}
+
+func unauthenticatedToolCall(request *http.Request) (ToolName, json.RawMessage) {
+	if request.Body == nil {
+		return "mcp.request", nil
+	}
+	body, err := io.ReadAll(io.LimitReader(request.Body, 1<<20))
+	if err != nil {
+		return "mcp.request", nil
+	}
+	request.Body = io.NopCloser(bytes.NewReader(body))
+	var envelope struct {
+		Method string `json:"method"`
+		Params struct {
+			Name      ToolName        `json:"name"`
+			Arguments json.RawMessage `json:"arguments"`
+		} `json:"params"`
+	}
+	if json.Unmarshal(body, &envelope) != nil || envelope.Method != "tools/call" || envelope.Params.Name == "" {
+		return "mcp.request", nil
+	}
+	return envelope.Params.Name, envelope.Params.Arguments
 }
 
 func writeOAuthChallenge(response http.ResponseWriter, oauth OAuthResource) {
@@ -313,15 +368,41 @@ func oauthResourceMetadata(oauth OAuthResource) http.HandlerFunc {
 }
 
 func newMCPServer(deps Dependencies, securityContext SecurityContext) *mcp.Server {
+	if deps.Policy != nil {
+		deps.Policy = correlatedPolicy{PolicyClient: deps.Policy}
+	}
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "agent-tool-guardrails",
 		Version: "v0.1.0",
 	}, nil)
 	server.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, request mcp.Request) (mcp.Result, error) {
+			if method == "tools/call" {
+				params, ok := request.GetParams().(*mcp.CallToolParamsRaw)
+				if !ok {
+					return next(ctx, method, request)
+				}
+				started := time.Now()
+				ctx, observation := beginToolCall(ctx, ToolName(params.Name), params.Arguments)
+				if deps.Approvals == nil || deps.Approvals.Health(ctx) != nil {
+					observeFailure(ctx, "approval_authority_unavailable")
+					result := &mcp.CallToolResult{}
+					result.SetError(errors.New("control plane unavailable"))
+					if err := recordOperationalAudit(ctx, deps.Audit, securityContext, observation, result, nil, time.Since(started)); err != nil {
+						return nil, err
+					}
+					return result, nil
+				}
+				result, err := next(ctx, method, request)
+				if auditErr := recordOperationalAudit(ctx, deps.Audit, securityContext, observation, result, err, time.Since(started)); auditErr != nil {
+					return nil, errors.Join(err, auditErr)
+				}
+				return result, err
+			}
 			if method != "tools/list" {
 				return next(ctx, method, request)
 			}
+			ctx, _ = beginToolCall(ctx, unlockSmartLockTool, nil)
 			result, err := next(ctx, method, request)
 			if err != nil {
 				return nil, err
@@ -333,11 +414,12 @@ func newMCPServer(deps Dependencies, securityContext SecurityContext) *mcp.Serve
 			filtered := make([]*mcp.Tool, 0, len(listed.Tools))
 			for _, tool := range listed.Tools {
 				decision, decisionErr := deps.Policy.Decide(ctx, newPolicyInput(
-					securityContext, discoverOperation, ToolName(tool.Name), nil,
+					ctx, securityContext, discoverOperation, ToolName(tool.Name), nil,
 				))
 				if ToolName(tool.Name) == unlockSmartLockTool {
+					traceID, _, _ := ToolCallCorrelation(ctx)
 					auditErr := recordAudit(
-						ctx, deps.Audit, securityContext, discoverOperation, unlockSmartLockTool, decision, "",
+						ctx, deps.Audit, securityContext, discoverOperation, unlockSmartLockTool, decision, traceID,
 						decisionOutcome(decision, decisionErr), decisionReason(decision, decisionErr),
 					)
 					if auditErr != nil {
@@ -361,7 +443,7 @@ func newMCPServer(deps Dependencies, securityContext SecurityContext) *mcp.Serve
 		Description: "Read the status of the demo coffee station.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input coffeeStationStatusInput) (*mcp.CallToolResult, CoffeeStationStatus, error) {
 		decision, err := deps.Policy.Decide(ctx, newPolicyInput(
-			securityContext, executeOperation, coffeeStationStatusTool, input,
+			ctx, securityContext, executeOperation, coffeeStationStatusTool, input,
 		))
 		if err != nil {
 			return nil, CoffeeStationStatus{}, err
@@ -377,6 +459,7 @@ func newMCPServer(deps Dependencies, securityContext SecurityContext) *mcp.Serve
 			return nil, CoffeeStationStatus{}, err
 		}
 		if status.StationID != input.StationID || (status.State != "ready" && status.State != "offline") {
+			observeFailure(ctx, "malformed_output")
 			result.SetError(errors.New("adapter returned invalid coffee station status"))
 			return result, CoffeeStationStatus{}, nil
 		}
@@ -407,6 +490,7 @@ func newMCPServer(deps Dependencies, securityContext SecurityContext) *mcp.Serve
 			return nil, development.RepositoryDocument{}, err
 		}
 		if err := document.Validate(input.Path); err != nil {
+			observeFailure(ctx, "malformed_output")
 			result.SetError(err)
 			return result, development.RepositoryDocument{}, nil
 		}
@@ -425,7 +509,7 @@ func newMCPServer(deps Dependencies, securityContext SecurityContext) *mcp.Serve
 			return result, freebusy.View{}, nil
 		}
 		decision, err := deps.Policy.Decide(ctx, newPolicyInput(
-			securityContext, executeOperation, findAvailabilityTool, input,
+			ctx, securityContext, executeOperation, findAvailabilityTool, input,
 		))
 		if err != nil {
 			return nil, freebusy.View{}, err
@@ -449,6 +533,7 @@ func newMCPServer(deps Dependencies, securityContext SecurityContext) *mcp.Serve
 			if intervalStartErr != nil || intervalEndErr != nil ||
 				intervalStart.Before(start) || intervalEnd.After(end) ||
 				!intervalEnd.After(intervalStart) || intervalStart.Before(previousEnd) {
+				observeFailure(ctx, "malformed_output")
 				result.SetError(errors.New("calendar returned an invalid Free/Busy View"))
 				return result, freebusy.View{}, nil
 			}
@@ -548,6 +633,7 @@ func newMCPServer(deps Dependencies, securityContext SecurityContext) *mcp.Serve
 			deps.Proposals.CompleteApproval(input.ProposalID)
 		}
 		if event.EventID == "" {
+			observeFailure(ctx, "malformed_output")
 			result.SetError(errors.New("calendar returned an invalid event"))
 			return result, meeting.Event{}, nil
 		}
@@ -591,7 +677,7 @@ func newMCPServer(deps Dependencies, securityContext SecurityContext) *mcp.Serve
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input unlockSmartLockInput) (*mcp.CallToolResult, SmartLockState, error) {
 		arguments := smartlock.Arguments{DeviceID: input.DeviceID}
 		decision, err := deps.Policy.Decide(ctx, newPolicyInput(
-			securityContext, executeOperation, unlockSmartLockTool, arguments,
+			ctx, securityContext, executeOperation, unlockSmartLockTool, arguments,
 		))
 		if err != nil {
 			if auditErr := recordAudit(ctx, deps.Audit, securityContext, executeOperation, unlockSmartLockTool, PolicyDecision{DecisionID: "unavailable"}, "", "deny", "policy_unavailable"); auditErr != nil {
@@ -634,6 +720,7 @@ func newMCPServer(deps Dependencies, securityContext SecurityContext) *mcp.Serve
 			return nil, SmartLockState{}, err
 		}
 		if state.DeviceID != input.DeviceID || state.State != smartlock.StateUnlocked {
+			observeFailure(ctx, "malformed_output")
 			result.SetError(errors.New("smart-lock adapter returned invalid state"))
 			return result, SmartLockState{}, nil
 		}
@@ -665,6 +752,7 @@ func newMCPServer(deps Dependencies, securityContext SecurityContext) *mcp.Serve
 			return nil, searchOutlookOutput{}, err
 		}
 		if err := outlook.ValidateSearchResults(messages, input.Limit); err != nil {
+			observeFailure(ctx, "malformed_output")
 			result.SetError(err)
 			return result, searchOutlookOutput{}, nil
 		}
@@ -695,6 +783,7 @@ func newMCPServer(deps Dependencies, securityContext SecurityContext) *mcp.Serve
 			return nil, outlook.MessageView{}, err
 		}
 		if err := view.Validate(input.MessageID); err != nil {
+			observeFailure(ctx, "malformed_output")
 			result.SetError(err)
 			return result, outlook.MessageView{}, nil
 		}
@@ -718,7 +807,7 @@ func policyResult(decision PolicyDecision) *mcp.CallToolResult {
 }
 
 func authorize(ctx context.Context, policy PolicyClient, securityContext SecurityContext, tool ToolName, arguments any) (*mcp.CallToolResult, bool, error) {
-	decision, err := policy.Decide(ctx, newPolicyInput(securityContext, executeOperation, tool, arguments))
+	decision, err := policy.Decide(ctx, newPolicyInput(ctx, securityContext, executeOperation, tool, arguments))
 	if err != nil {
 		return nil, false, err
 	}
@@ -732,14 +821,57 @@ func authorize(ctx context.Context, policy PolicyClient, securityContext Securit
 
 var policyCorrelationSequence atomic.Uint64
 
-func newPolicyInput(securityContext SecurityContext, operation PolicyOperation, tool ToolName, arguments any) PolicyInput {
+func newPolicyInput(ctx context.Context, securityContext SecurityContext, operation PolicyOperation, tool ToolName, arguments any) PolicyInput {
+	traceID, _, _ := ToolCallCorrelation(ctx)
 	return PolicyInput{
+		TraceID:         traceID,
 		CorrelationID:   CorrelationID(fmt.Sprintf("policy-%d-%d", time.Now().UnixNano(), policyCorrelationSequence.Add(1))),
 		SecurityContext: securityContext,
 		Operation:       operation,
 		Tool:            tool,
 		Arguments:       arguments,
 	}
+}
+
+func recordOperationalAudit(ctx context.Context, sink AuditSink, securityContext SecurityContext, observation *toolCallObservation, result mcp.Result, callErr error, duration time.Duration) error {
+	traceID, tool, safe, decision, failure := observation.snapshot()
+	outcome := "allow"
+	reason := decision.Reason
+	if callErr != nil || callResultHasError(result) {
+		outcome = "deny"
+		if failure != "" {
+			reason = failure
+		} else if decision.DecisionID == "" {
+			reason = "malformed_input"
+		} else {
+			reason = "tool_or_adapter_denied"
+		}
+	}
+	if failure != "" {
+		outcome = "deny"
+		reason = failure
+	}
+	if decision.DecisionID == "" {
+		decision.DecisionID = "unavailable"
+	}
+	if decision.CorrelationID == "" {
+		decision.CorrelationID = CorrelationID(traceID)
+	}
+	if decision.Reason == "" {
+		decision.Reason = reason
+	}
+	if decision.PolicyRevision == "" {
+		decision.PolicyRevision = "unavailable"
+	}
+	if decision.Obligations == nil {
+		decision.Obligations = []Obligation{}
+	}
+	return recordAuditWithDetails(ctx, sink, securityContext, executeOperation, tool, decision, traceID, outcome, reason, safe, duration)
+}
+
+func callResultHasError(result mcp.Result) bool {
+	callResult, ok := result.(*mcp.CallToolResult)
+	return ok && callResult.IsError
 }
 
 func exactBinding(securityContext SecurityContext, operation meeting.Operation) approvalauthority.Binding {
@@ -750,13 +882,36 @@ func exactBinding(securityContext SecurityContext, operation meeting.Operation) 
 }
 
 func recordAudit(ctx context.Context, sink AuditSink, securityContext SecurityContext, operation PolicyOperation, tool ToolName, decision PolicyDecision, traceID, outcome, reason string) error {
+	return recordAuditWithDetails(ctx, sink, securityContext, operation, tool, decision, traceID, outcome, reason, map[string]any{}, 0)
+}
+
+func recordAuditWithDetails(ctx context.Context, sink AuditSink, securityContext SecurityContext, operation PolicyOperation, tool ToolName, decision PolicyDecision, traceID, outcome, reason string, safeArguments map[string]any, duration time.Duration) error {
 	if sink == nil {
 		return errors.New("audit sink is unavailable")
+	}
+	if traceID == "" {
+		traceID = string(decision.CorrelationID)
+	}
+	if decision.CorrelationID == "" {
+		decision.CorrelationID = CorrelationID(traceID)
+	}
+	if decision.DecisionID == "" {
+		decision.DecisionID = "unavailable"
+	}
+	if decision.Reason == "" {
+		decision.Reason = reason
+	}
+	if decision.PolicyRevision == "" {
+		decision.PolicyRevision = "unavailable"
+	}
+	if decision.Obligations == nil {
+		decision.Obligations = []Obligation{}
 	}
 	return sink.Record(ctx, AuditRecord{
 		TraceID: traceID, CorrelationID: decision.CorrelationID, DecisionID: decision.DecisionID, SubjectKind: subjectKind(securityContext.Subject),
 		Actor: securityContext.Actor, Channel: securityContext.Channel, Operation: operation, Tool: tool,
-		Outcome: outcome, Reason: reason,
+		Outcome: outcome, Reason: reason, SafeArguments: safeArguments, Rule: decision.Reason,
+		PolicyRevision: decision.PolicyRevision, Obligations: decision.Obligations, DurationMicros: duration.Microseconds(),
 	})
 }
 

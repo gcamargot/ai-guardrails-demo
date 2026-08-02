@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/nahtao97/agent-tool-guardrails/internal/development"
+	"github.com/nahtao97/agent-tool-guardrails/internal/gateway"
 )
 
 type Client struct {
@@ -27,6 +28,7 @@ func (client *Client) Read(ctx context.Context, path development.RepositoryPath)
 	if err != nil {
 		return development.RepositoryDocument{}, fmt.Errorf("create repository read: %w", err)
 	}
+	gateway.ApplyToolCallCorrelation(ctx, request)
 	response, err := client.httpClient.Do(request)
 	if err != nil {
 		return development.RepositoryDocument{}, fmt.Errorf("read repository: %w", err)

@@ -145,7 +145,7 @@ test_positive_execution_matrix if {
 		result.allow
 		result.correlation_id == "matrix-execution"
 		result.obligations == case.obligations
-		result.policy_revision == "ticket-08"
+		result.policy_revision == "ticket-09"
 	}
 }
 
@@ -180,7 +180,7 @@ test_turn_capabilities_never_expand_authority if {
 		not result.allow
 		result.correlation_id == "matrix-deny-capability"
 		result.obligations == []
-		result.policy_revision == "ticket-08"
+		result.policy_revision == "ticket-09"
 	}
 }
 

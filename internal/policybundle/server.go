@@ -40,6 +40,7 @@ func NewHandler(config Config) (http.Handler, error) {
 	mux.HandleFunc("GET /healthz", service.health)
 	mux.HandleFunc("GET /bundles/agent-tools.tar.gz", service.bundle)
 	mux.HandleFunc("POST /updates/invalid-signature", service.publishInvalid)
+	mux.HandleFunc("POST /updates/valid", service.publishValid)
 	return mux, nil
 }
 
@@ -121,6 +122,17 @@ func (service *server) publishInvalid(response http.ResponseWriter, _ *http.Requ
 	}
 	service.mu.Lock()
 	service.invalid = true
+	service.mu.Unlock()
+	response.WriteHeader(http.StatusNoContent)
+}
+
+func (service *server) publishValid(response http.ResponseWriter, _ *http.Request) {
+	if _, err := os.Stat(service.config.ValidPath); err != nil {
+		http.Error(response, "valid bundle unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	service.mu.Lock()
+	service.invalid = false
 	service.mu.Unlock()
 	response.WriteHeader(http.StatusNoContent)
 }

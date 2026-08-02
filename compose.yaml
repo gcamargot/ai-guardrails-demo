@@ -268,7 +268,7 @@ services:
       OPA_URL: http://opa:8181
       OIDC_AUDIENCE: agent-tools-gateway
       OIDC_ISSUER: http://127.0.0.1:8082/realms/agent-tools
-      OIDC_JWKS_URL: http://keycloak:8080/realms/agent-tools/protocol/openid-connect/certs
+      OIDC_JWKS_URL: http://oauth-facade:8082/realms/agent-tools/protocol/openid-connect/certs
       OIDC_OPTIONAL_SCOPES: dev.repository.read,smart_lock.write
       OIDC_REQUIRED_SCOPES: coffee_station.read
       OUTLOOK_URL: http://outlook:8087
@@ -336,7 +336,7 @@ services:
       OPA_URL: http://opa:8181
       OIDC_AUDIENCE: agent-tools-gateway
       OIDC_ISSUER: http://127.0.0.1:8082/realms/agent-tools
-      OIDC_JWKS_URL: http://keycloak:8080/realms/agent-tools/protocol/openid-connect/certs
+      OIDC_JWKS_URL: http://oauth-facade:8082/realms/agent-tools/protocol/openid-connect/certs
       OIDC_OPTIONAL_SCOPES: calendar.meeting.approve,outlook.mail.read,smart_lock.write
       OIDC_REQUIRED_SCOPES: calendar.free_busy.read,calendar.meeting.propose
       OUTLOOK_URL: http://outlook:8087
@@ -441,10 +441,12 @@ services:
       AUDIT_RECORDS_URL: http://audit:8089/records
       OPA_STATUS_URL: http://opa:8181/v1/status
       POLICY_INVALID_UPDATE_URL: http://policy-bundle:8091/updates/invalid-signature
+      POLICY_VALID_UPDATE_URL: http://policy-bundle:8091/updates/valid
       CALENDAR_METRICS_URL: http://calendar:8083/metrics
       SMART_LOCK_METRICS_URL: http://smart-lock:8088/metrics
       GATEWAY_MCP_URL: http://gateway:8080/mcp
       KEYCLOAK_TOKEN_URL: http://keycloak:8080/realms/agent-tools/protocol/openid-connect/token
+      IDENTITY_FAULT_URL: http://oauth-facade:8082/test/identity
       TELEGRAM_GATEWAY_MCP_URL: http://telegram-gateway:8080/mcp
       TELEGRAM_WEBHOOK_URL: http://telegram-adapter:8084/telegram/webhook
     depends_on:
@@ -458,6 +460,63 @@ services:
       - observability
       - audit
       - control
+    profiles:
+      - test
+
+  telegram-network-probe:
+    image: alpine:3.22
+    command:
+      - sh
+      - -ec
+      - |
+        wget -q -O /dev/null http://telegram-gateway:8080/healthz
+        for target in coffee-station:8081 calendar:8083 outlook:8087 smart-lock:8088 development-repository:8090; do
+          if wget -q -T 1 -O /dev/null "http://$$target/healthz" 2>/dev/null; then
+            echo "Telegram reached protected adapter $$target" >&2
+            exit 1
+          fi
+        done
+    networks:
+      - public
+      - identity
+      - model
+      - approval
+    profiles:
+      - test
+
+  qwen-network-probe:
+    image: alpine:3.22
+    command:
+      - sh
+      - -ec
+      - |
+        wget -q -O /dev/null http://qwen:8085/healthz
+        for target in coffee-station:8081 calendar:8083 outlook:8087 smart-lock:8088 development-repository:8090; do
+          if wget -q -T 1 -O /dev/null "http://$$target/healthz" 2>/dev/null; then
+            echo "Qwen reached protected adapter $$target" >&2
+            exit 1
+          fi
+        done
+    networks:
+      - model
+    profiles:
+      - test
+
+  codex-network-probe:
+    image: alpine:3.22
+    command:
+      - sh
+      - -ec
+      - |
+        wget -q -O /dev/null http://gateway:8080/healthz
+        for target in coffee-station:8081 calendar:8083 outlook:8087 smart-lock:8088 development-repository:8090; do
+          if wget -q -T 1 -O /dev/null "http://$$target/healthz" 2>/dev/null; then
+            echo "Codex reached protected adapter $$target" >&2
+            exit 1
+          fi
+        done
+    networks:
+      - public
     profiles:
       - test
 

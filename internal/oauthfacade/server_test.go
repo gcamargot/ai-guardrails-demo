@@ -37,3 +37,42 @@ func TestFacadeDisablesRFC9207AdvertisementForCodexCallbackCompatibility(t *test
 		}
 	}
 }
+
+func TestIdentityFaultFixtureCanMakeJWKSUnavailableAndRestoreIt(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		_, _ = response.Write([]byte(`{"keys":[]}`))
+	}))
+	defer backend.Close()
+	facade := httptest.NewServer(oauthfacade.NewHandler(backend.URL))
+	defer facade.Close()
+
+	post := func(path string) {
+		response, err := http.Post(facade.URL+path, "application/json", nil)
+		if err != nil {
+			t.Fatalf("toggle identity fixture: %v", err)
+		}
+		response.Body.Close()
+		if response.StatusCode != http.StatusNoContent {
+			t.Fatalf("toggle %s returned HTTP %d", path, response.StatusCode)
+		}
+	}
+	post("/test/identity/unavailable")
+	response, err := http.Get(facade.URL + "/realms/agent-tools/protocol/openid-connect/certs")
+	if err != nil {
+		t.Fatalf("get unavailable JWKS: %v", err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("unavailable JWKS returned HTTP %d", response.StatusCode)
+	}
+	post("/test/identity/available")
+	response, err = http.Get(facade.URL + "/realms/agent-tools/protocol/openid-connect/certs")
+	if err != nil {
+		t.Fatalf("get restored JWKS: %v", err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("restored JWKS returned HTTP %d", response.StatusCode)
+	}
+}

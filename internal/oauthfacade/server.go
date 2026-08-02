@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 )
 
 func NewHandler(backend string) http.Handler {
@@ -45,10 +46,25 @@ func NewHandler(backend string) http.Handler {
 		return nil
 	}
 	mux := http.NewServeMux()
+	var identityUnavailable atomic.Bool
 	mux.HandleFunc("GET /healthz", func(response http.ResponseWriter, _ *http.Request) {
 		response.Header().Set("Content-Type", "application/json")
 		_, _ = response.Write([]byte(`{"status":"ready"}`))
 	})
-	mux.Handle("/", proxy)
+	mux.HandleFunc("POST /test/identity/unavailable", func(response http.ResponseWriter, _ *http.Request) {
+		identityUnavailable.Store(true)
+		response.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /test/identity/available", func(response http.ResponseWriter, _ *http.Request) {
+		identityUnavailable.Store(false)
+		response.WriteHeader(http.StatusNoContent)
+	})
+	mux.Handle("/", http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if identityUnavailable.Load() && strings.HasSuffix(request.URL.Path, "/protocol/openid-connect/certs") {
+			http.Error(response, "identity unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		proxy.ServeHTTP(response, request)
+	}))
 	return mux
 }

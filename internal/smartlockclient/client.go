@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/nahtao97/agent-tool-guardrails/internal/gateway"
 	"github.com/nahtao97/agent-tool-guardrails/internal/smartlock"
 )
 
@@ -33,6 +34,7 @@ func (client *Client) Unlock(ctx context.Context, deviceID smartlock.DeviceID) (
 	}
 	request.Header.Set("Authorization", "Bearer "+client.credential)
 	request.Header.Set("Content-Type", "application/json")
+	gateway.ApplyToolCallCorrelation(ctx, request)
 	response, err := client.httpClient.Do(request)
 	if err != nil {
 		return smartlock.State{}, fmt.Errorf("unlock smart lock: %w", err)

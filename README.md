@@ -12,7 +12,7 @@ The smoke path proves these outcomes:
 
 - A request without a Bearer token fails with `401` before OPA or the Protected Resource.
 - Keycloak issues signed tokens for `telegram-agent` and `coding-agent` with the same authenticated Subject and distinct Actors.
-- Both Actors may read `demo-station` and receive `state: ready` through policy revision `ticket-08`.
+- Both Actors may read `demo-station` and receive `state: ready` through policy revision `ticket-09`.
 - The Owner's coding Actor can use the exact `dev.read_repository` Tool for allowlisted `CONTEXT.md`; the isolated adapter rejects other paths.
 - The coding Actor does not discover `smart_lock.unlock`. A crafted raw MCP call that bypasses Codex's allowlist and approval prompt is still denied by OPA, produces no Effect, and emits audit evidence separating Owner Subject from `coding-agent` Actor.
 - A forged Model Interpretation claiming another user, Actor or sensitive capability cannot alter the effective Security Context.
@@ -25,6 +25,9 @@ The smoke path proves these outcomes:
 - The Owner's deterministic `/outlook-search <query>` and `/outlook-read <message-id>` commands request the optional `outlook.mail.read` Turn Capability for one short interaction. Without it, Outlook Tools are not discoverable.
 - The prepared email contains a prompt-injection sentinel. Its minimized view is explicitly marked `untrusted_content`, contains no body, and keeps `outlook_effect_count=0`; a later Effect still requires a new explicit command and capability.
 - Gateway, calendar and Outlook load synthetic downstream credentials from Vault. The smoke fails if credentials, email bodies or full prompt sentinels appear in service logs.
+- Every Tool Call emits structured operational evidence joining gateway trace, OPA correlation and decision identifiers, safe normalized arguments, rule, revision, obligations, outcome and timing. OPA decision logs remove sensitive argument paths before emission.
+- The smoke deliberately makes identity, OPA and Approval Authority unavailable; even Free/Busy reads deny closed and the calendar Effect count remains unchanged. A malformed adapter response is also denied with an auditable reason.
+- Test-profile probes with the exact network memberships of Telegram, Qwen and Codex prove that those clients cannot resolve or connect to Protected Resource adapters directly.
 
 The gateway is available at `http://localhost:8080/mcp`, and the synthetic Telegram webhook at `http://localhost:8084/telegram/webhook`. Keycloak is imported from [`keycloak/agent-tools-realm.json`](keycloak/agent-tools-realm.json). Vault runs in dev mode, and all checked-in identities and credentials are synthetic fixtures for the isolated demo only.
 
@@ -86,9 +89,15 @@ Those settings are a useful client defense and UX control, not the Enforcement B
 
 [`scripts/policy-ci.sh`](scripts/policy-ci.sh) is the single publishing path. It rejects unformatted Rego, strict compilation failures, an empty or failing unit-test suite, and an incomplete ownership contract before producing anything. Only after every gate succeeds does it build a revisioned ES256 bundle under `.artifacts/policy/`. [`scripts/policy-ci-test.sh`](scripts/policy-ci-test.sh) runs an executable fixture for each rejection mode plus the valid publishing path.
 
-OPA no longer mounts policy source. It downloads the artifact from the internal Bundle Service, verifies its signature against the independently configured public key, and becomes ready only after the first bundle activates. Every Policy Decision echoes a gateway-generated `correlation_id`, its `decision_id`, obligations and the revision stored inside the active artifact. The smoke offers OPA an update signed by an untrusted key, observes the signature error through Status API, verifies that `active_revision` remains `ticket-08`, and successfully evaluates another Tool Call against that last good revision.
+OPA no longer mounts policy source. It downloads the artifact from the internal Bundle Service, verifies its signature against the independently configured public key, and becomes ready only after the first bundle activates. Every Policy Decision echoes a gateway-generated `correlation_id`, its `decision_id`, obligations and the revision stored inside the active artifact. The smoke offers OPA an update signed by an untrusted key, observes the signature error through Status API, verifies that `active_revision` remains `ticket-09`, and successfully evaluates another Tool Call against that last good revision.
 
 The EC private keys under `policies/keys/` are synthetic fixtures for this isolated demo and must never be reused. A production pipeline would keep the signing key in a KMS, HSM or Vault transit engine and distribute only its public key to OPA. [`policies/OWNERS.md`](policies/OWNERS.md) requires two independent approvals for sensitive policy changes: Platform/Security for the Enforcement Boundary and signing workflow, plus the relevant Protected Resource owner for intended authority and constraints.
+
+## Observable fail-closed operation
+
+The gateway creates a fresh `trace_id` at the MCP boundary and propagates it with `correlation_id` and `decision_id` to the selected adapter. The audit collector accepts only typed records and per-Tool allow-listed argument keys. It stores Subject classification rather than the Subject identifier and never accepts Bearer or Approval tokens, credentials, message bodies, full prompts, mailbox queries, contacts or meeting reasons. The signed bundle includes `system.log.mask`, which removes those sensitive paths from OPA decision logs as a separate defense.
+
+Approval Authority health is a common execution prerequisite, including read-only Free/Busy. Identity health is checked against JWKS before cached token verification, and OPA errors remain hard denies. Unavailable dependencies and malformed input or adapter output produce correlated deny records before results cross the Enforcement Boundary. `scripts/smoke.sh` exercises all four failures, bounds recovery waits, verifies zero additional calendar Effects and tears down the isolated environment on success or failure.
 
 ## Test
 
