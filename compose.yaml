@@ -106,13 +106,20 @@ services:
         vault policy write calendar-reader /config/calendar-reader.hcl >/dev/null
         vault policy write outlook-reader /config/outlook-reader.hcl >/dev/null
         vault policy write smart-lock-reader /config/smart-lock-reader.hcl >/dev/null
+        vault policy write demo-reset-reader /config/demo-reset-reader.hcl >/dev/null
         vault kv put secret/calendar credential=demo-calendar-credential >/dev/null
         vault kv put secret/outlook credential=demo-outlook-credential >/dev/null
         vault kv put secret/smart-lock credential=demo-smart-lock-credential >/dev/null
+        vault kv put secret/demo-reset credential=demo-reset-control-credential >/dev/null
         vault token create -field=token -policy=calendar-reader -policy=outlook-reader -policy=smart-lock-reader -no-default-policy > /tokens/gateway
         vault token create -field=token -policy=calendar-reader -no-default-policy > /tokens/calendar
         vault token create -field=token -policy=outlook-reader -no-default-policy > /tokens/outlook
-        vault token create -field=token -policy=smart-lock-reader -no-default-policy > /tokens/smart-lock
+        vault token create -field=token -policy=smart-lock-reader -policy=demo-reset-reader -no-default-policy > /tokens/smart-lock
+        vault token create -field=token -policy=demo-reset-reader -no-default-policy > /tokens/approval-authority
+        vault token create -field=token -policy=demo-reset-reader -no-default-policy > /tokens/audit
+        vault token create -field=token -policy=demo-reset-reader -no-default-policy > /tokens/insecure-smart-lock
+        vault token create -field=token -policy=demo-reset-reader -no-default-policy > /tokens/demo-control
+        vault token create -field=token -policy=demo-reset-reader -no-default-policy > /tokens/smoke
     depends_on:
       vault:
         condition: service_healthy
@@ -190,7 +197,6 @@ services:
     build: .
     command: /app/smart-lock
     environment:
-      DEMO_RESET_CREDENTIAL: demo-reset-control-credential
       VAULT_TOKEN_FILE: /run/vault-token/smart-lock
       VAULT_URL: http://vault:8200
     depends_on:
@@ -212,10 +218,17 @@ services:
     build: .
     command: /app/audit
     environment:
-      DEMO_RESET_CREDENTIAL: demo-reset-control-credential
+      VAULT_TOKEN_FILE: /run/vault-token/audit
+      VAULT_URL: http://vault:8200
+    depends_on:
+      vault-init:
+        condition: service_completed_successfully
     networks:
       - audit
       - observability
+      - secrets
+    volumes:
+      - vault-tokens:/run/vault-token:ro
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8089/healthz"]
       interval: 2s
@@ -239,15 +252,20 @@ services:
       APPROVAL_SIGNING_KEY: demo-approval-signing-key-32-bytes-minimum
       APPROVAL_STATE_FILE: /state/consumed-nonces
       APPROVAL_TTL: 5s
-      DEMO_RESET_CREDENTIAL: demo-reset-control-credential
       OWNER_SUBJECT: owner-subject-id
+      VAULT_TOKEN_FILE: /run/vault-token/approval-authority
+      VAULT_URL: http://vault:8200
     networks:
       - approval
       - observability
+      - secrets
     volumes:
       - approval-state:/state
+      - vault-tokens:/run/vault-token:ro
     depends_on:
       approval-state-init:
+        condition: service_completed_successfully
+      vault-init:
         condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8086/healthz"]
@@ -404,10 +422,17 @@ services:
     build: .
     command: /app/insecure-smart-lock
     environment:
-      DEMO_RESET_CREDENTIAL: demo-reset-control-credential
       INSECURE_LOCK_CREDENTIAL: insecure-prompt-only-credential
+      VAULT_TOKEN_FILE: /run/vault-token/insecure-smart-lock
+      VAULT_URL: http://vault:8200
+    depends_on:
+      vault-init:
+        condition: service_completed_successfully
     networks:
       - exploit
+      - secrets
+    volumes:
+      - vault-tokens:/run/vault-token:ro
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8092/healthz"]
       interval: 2s
@@ -455,9 +480,10 @@ services:
     environment:
       APPROVAL_AUTHORITY_URL: http://approval-authority:8086
       AUDIT_URL: http://audit:8089
-      DEMO_RESET_CREDENTIAL: demo-reset-control-credential
       INSECURE_LOCK_URL: http://insecure-smart-lock:8092
       SECURE_LOCK_URL: http://smart-lock:8088
+      VAULT_TOKEN_FILE: /run/vault-token/demo-control
+      VAULT_URL: http://vault:8200
     depends_on:
       approval-authority:
         condition: service_healthy
@@ -467,11 +493,16 @@ services:
         condition: service_healthy
       smart-lock:
         condition: service_healthy
+      vault-init:
+        condition: service_completed_successfully
     networks:
       - demo-control
       - exploit
       - audit
       - observability
+      - secrets
+    volumes:
+      - vault-tokens:/run/vault-token:ro
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8094/healthz"]
       interval: 2s
@@ -529,8 +560,9 @@ services:
       SMART_LOCK_METRICS_URL: http://smart-lock:8088/metrics
       REPLAY_DEMO_URL: http://replay-demo:8093
       DEMO_CONTROL_URL: http://demo-control:8094
-      DEMO_RESET_CREDENTIAL: demo-reset-control-credential
       APPROVAL_METRICS_URL: http://approval-authority:8086/metrics
+      VAULT_TOKEN_FILE: /run/vault-token/smoke
+      VAULT_URL: http://vault:8200
       GATEWAY_MCP_URL: http://gateway:8080/mcp
       KEYCLOAK_TOKEN_URL: http://keycloak:8080/realms/agent-tools/protocol/openid-connect/token
       IDENTITY_FAULT_URL: http://oauth-facade:8082/test/identity
@@ -545,6 +577,8 @@ services:
         condition: service_healthy
       telegram-adapter:
         condition: service_healthy
+      vault-init:
+        condition: service_completed_successfully
     networks:
       - public
       - identity
@@ -552,6 +586,9 @@ services:
       - audit
       - control
       - demo-control
+      - secrets
+    volumes:
+      - vault-tokens:/run/vault-token:ro
     profiles:
       - test
 

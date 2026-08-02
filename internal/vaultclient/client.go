@@ -44,6 +44,10 @@ func (client *Client) SmartLockCredential(ctx context.Context) (string, error) {
 	return client.credential(ctx, "smart-lock")
 }
 
+func (client *Client) DemoResetCredential(ctx context.Context) (string, error) {
+	return client.credential(ctx, "demo-reset")
+}
+
 func (client *Client) credential(ctx context.Context, resource string) (string, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, client.baseURL+"/v1/secret/data/"+resource, nil)
 	if err != nil {

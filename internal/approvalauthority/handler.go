@@ -16,6 +16,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/nahtao97/agent-tool-guardrails/internal/httpauth"
 )
 
 type Binding struct {
@@ -92,14 +94,7 @@ func NewHandler(config Config) http.Handler {
 }
 
 func (service *authority) authenticate(credential string, next http.HandlerFunc) http.HandlerFunc {
-	return func(response http.ResponseWriter, request *http.Request) {
-		want := "Bearer " + credential
-		if credential == "" || !hmac.Equal([]byte(request.Header.Get("Authorization")), []byte(want)) {
-			http.Error(response, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		next(response, request)
-	}
+	return httpauth.RequireBearer(credential, next)
 }
 
 func (service *authority) issue(response http.ResponseWriter, request *http.Request) {

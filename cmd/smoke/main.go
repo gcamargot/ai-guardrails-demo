@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/nahtao97/agent-tool-guardrails/internal/envconfig"
 	"github.com/nahtao97/agent-tool-guardrails/internal/oidcclient"
+	"github.com/nahtao97/agent-tool-guardrails/internal/vaultclient"
 	"golang.org/x/oauth2"
 )
 
@@ -28,7 +30,16 @@ func main() {
 	auditRecordsEndpoint := environment("AUDIT_RECORDS_URL", "http://127.0.0.1:8089/records")
 	replayDemoEndpoint := environment("REPLAY_DEMO_URL", "http://127.0.0.1:8093")
 	demoControlEndpoint := environment("DEMO_CONTROL_URL", "http://127.0.0.1:8094")
-	demoResetCredential := environment("DEMO_RESET_CREDENTIAL", "demo-reset-control-credential")
+	vaultToken, err := vaultclient.ReadToken(envconfig.Must("VAULT_TOKEN_FILE"))
+	if err != nil {
+		log.Fatalf("initialize Vault identity: %v", err)
+	}
+	demoResetCredential, err := vaultclient.New(
+		envconfig.Must("VAULT_URL"), vaultToken, &http.Client{Timeout: 3 * time.Second},
+	).DemoResetCredential(ctx)
+	if err != nil {
+		log.Fatalf("initialize demo reset credential: %v", err)
+	}
 	approvalMetricsEndpoint := environment("APPROVAL_METRICS_URL", "http://127.0.0.1:8086/metrics")
 	opaStatusEndpoint := environment("OPA_STATUS_URL", "http://127.0.0.1:8181/v1/status")
 	invalidPolicyUpdateEndpoint := environment("POLICY_INVALID_UPDATE_URL", "http://127.0.0.1:8091/updates/invalid-signature")

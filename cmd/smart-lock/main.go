@@ -19,13 +19,18 @@ func main() {
 	if err != nil {
 		log.Fatalf("initialize Vault identity: %v", err)
 	}
-	credential, err := vaultclient.New(envconfig.Must("VAULT_URL"), vaultToken, httpClient).SmartLockCredential(context.Background())
+	vault := vaultclient.New(envconfig.Must("VAULT_URL"), vaultToken, httpClient)
+	credential, err := vault.SmartLockCredential(context.Background())
 	if err != nil {
 		log.Fatalf("initialize smart-lock credential: %v", err)
 	}
+	resetCredential, err := vault.DemoResetCredential(context.Background())
+	if err != nil {
+		log.Fatalf("initialize demo reset credential: %v", err)
+	}
 	server := &http.Server{
 		Addr: ":8088", Handler: adaptertelemetry.NewHandler(
-			smartlockserver.NewDemoHandler(credential, envconfig.Must("DEMO_RESET_CREDENTIAL")), os.Stdout,
+			smartlockserver.NewDemoHandler(credential, resetCredential), os.Stdout,
 		), ReadHeaderTimeout: 5 * time.Second,
 	}
 	log.Printf("isolated simulated smart lock listening on %s", server.Addr)

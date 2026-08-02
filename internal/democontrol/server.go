@@ -1,14 +1,13 @@
 package democontrol
 
 import (
-	"crypto/hmac"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
+	"github.com/nahtao97/agent-tool-guardrails/internal/httpauth"
+	"github.com/nahtao97/agent-tool-guardrails/internal/httpjson"
 	"github.com/nahtao97/agent-tool-guardrails/internal/smartlock"
 )
 
@@ -47,12 +46,7 @@ func NewHandler(config Config) http.Handler {
 		response.Header().Set("Content-Type", "application/json")
 		_, _ = response.Write([]byte(`{"status":"ready"}`))
 	})
-	mux.HandleFunc("POST /demo/reset", func(response http.ResponseWriter, request *http.Request) {
-		want := "Bearer " + config.Credential
-		if config.Credential == "" || !hmac.Equal([]byte(request.Header.Get("Authorization")), []byte(want)) {
-			http.Error(response, "unauthorized", http.StatusUnauthorized)
-			return
-		}
+	mux.HandleFunc("POST /demo/reset", httpauth.RequireBearer(config.Credential, func(response http.ResponseWriter, request *http.Request) {
 		result, err := reset(request, config)
 		if err != nil {
 			http.Error(response, "demo reset unavailable", http.StatusBadGateway)
@@ -60,7 +54,7 @@ func NewHandler(config Config) http.Handler {
 		}
 		response.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(response).Encode(result)
-	})
+	}))
 	return mux
 }
 
@@ -79,21 +73,21 @@ func reset(request *http.Request, config Config) (resetResult, error) {
 			return resetResult{}, err
 		}
 	}
-	insecure, err := readJSON[lockEvidence](request, config.HTTPClient, trimURL(config.InsecureLockURL)+"/metrics")
+	insecure, err := httpjson.GetStrict[lockEvidence](request.Context(), config.HTTPClient, trimURL(config.InsecureLockURL)+"/metrics")
 	if err != nil {
 		return resetResult{}, err
 	}
-	secure, err := readJSON[lockEvidence](request, config.HTTPClient, trimURL(config.SecureLockURL)+"/metrics")
+	secure, err := httpjson.GetStrict[lockEvidence](request.Context(), config.HTTPClient, trimURL(config.SecureLockURL)+"/metrics")
 	if err != nil {
 		return resetResult{}, err
 	}
-	records, err := readJSON[[]json.RawMessage](request, config.HTTPClient, trimURL(config.AuditURL)+"/records")
+	records, err := httpjson.GetStrict[[]json.RawMessage](request.Context(), config.HTTPClient, trimURL(config.AuditURL)+"/records")
 	if err != nil {
 		return resetResult{}, err
 	}
-	approvals, err := readJSON[struct {
+	approvals, err := httpjson.GetStrict[struct {
 		ConsumeCount int `json:"consume_count"`
-	}](request, config.HTTPClient, trimURL(config.ApprovalURL)+"/metrics")
+	}](request.Context(), config.HTTPClient, trimURL(config.ApprovalURL)+"/metrics")
 	if err != nil {
 		return resetResult{}, err
 	}
@@ -118,31 +112,6 @@ func postReset(parent *http.Request, client *http.Client, endpoint, credential s
 		return fmt.Errorf("reset target returned HTTP %d", response.StatusCode)
 	}
 	return nil
-}
-
-func readJSON[T any](parent *http.Request, client *http.Client, endpoint string) (T, error) {
-	var value T
-	request, err := http.NewRequestWithContext(parent.Context(), http.MethodGet, endpoint, nil)
-	if err != nil {
-		return value, err
-	}
-	response, err := client.Do(request)
-	if err != nil {
-		return value, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return value, fmt.Errorf("reset evidence returned HTTP %d", response.StatusCode)
-	}
-	decoder := json.NewDecoder(io.LimitReader(response.Body, 1<<20))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&value); err != nil {
-		return value, err
-	}
-	if decoder.Decode(&struct{}{}) != io.EOF {
-		return value, errors.New("multiple JSON values")
-	}
-	return value, nil
 }
 
 func trimURL(value string) string { return strings.TrimRight(value, "/") }

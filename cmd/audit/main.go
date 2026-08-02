@@ -1,16 +1,27 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"time"
 
 	"github.com/nahtao97/agent-tool-guardrails/internal/auditserver"
 	"github.com/nahtao97/agent-tool-guardrails/internal/envconfig"
+	"github.com/nahtao97/agent-tool-guardrails/internal/vaultclient"
 )
 
 func main() {
-	server := &http.Server{Addr: ":8089", Handler: auditserver.NewDemoHandler(envconfig.Must("DEMO_RESET_CREDENTIAL")), ReadHeaderTimeout: 5 * time.Second}
+	httpClient := &http.Client{Timeout: 3 * time.Second}
+	vaultToken, err := vaultclient.ReadToken(envconfig.Must("VAULT_TOKEN_FILE"))
+	if err != nil {
+		log.Fatalf("initialize Vault identity: %v", err)
+	}
+	resetCredential, err := vaultclient.New(envconfig.Must("VAULT_URL"), vaultToken, httpClient).DemoResetCredential(context.Background())
+	if err != nil {
+		log.Fatalf("initialize demo reset credential: %v", err)
+	}
+	server := &http.Server{Addr: ":8089", Handler: auditserver.NewDemoHandler(resetCredential), ReadHeaderTimeout: 5 * time.Second}
 	log.Printf("demo audit collector listening on %s", server.Addr)
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatal(err)

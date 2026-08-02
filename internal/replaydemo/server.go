@@ -6,12 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/nahtao97/agent-tool-guardrails/internal/gateway"
+	"github.com/nahtao97/agent-tool-guardrails/internal/httpjson"
 	"github.com/nahtao97/agent-tool-guardrails/internal/oidcclient"
 	"github.com/nahtao97/agent-tool-guardrails/internal/smartlock"
 	"github.com/nahtao97/agent-tool-guardrails/internal/smartlockclient"
@@ -193,7 +193,7 @@ func validInterpretation(value interpretation) bool {
 }
 
 func auditEvidence(ctx context.Context, config Config, correlationID gateway.CorrelationID) (gateway.AuditRecord, error) {
-	records, err := readJSON[[]gateway.AuditRecord](ctx, config.HTTPClient, config.AuditRecordsURL)
+	records, err := httpjson.GetStrict[[]gateway.AuditRecord](ctx, config.HTTPClient, config.AuditRecordsURL)
 	if err != nil {
 		return gateway.AuditRecord{}, err
 	}
@@ -203,26 +203,6 @@ func auditEvidence(ctx context.Context, config Config, correlationID gateway.Cor
 		}
 	}
 	return gateway.AuditRecord{}, errors.New("correlated Policy Decision evidence is missing")
-}
-
-func readJSON[T any](ctx context.Context, client *http.Client, endpoint string) (T, error) {
-	var value T
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return value, err
-	}
-	response, err := client.Do(request)
-	if err != nil {
-		return value, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return value, fmt.Errorf("evidence returned HTTP %d", response.StatusCode)
-	}
-	if err := decodeStrict(response.Body, &value); err != nil {
-		return value, err
-	}
-	return value, nil
 }
 
 func classifyExploit(ctx context.Context, config Config) (interpretation, error) {
@@ -244,7 +224,7 @@ func classifyExploit(ctx context.Context, config Config) (interpretation, error)
 		return interpretation{}, fmt.Errorf("Qwen returned HTTP %d", response.StatusCode)
 	}
 	var result interpretation
-	if err := decodeStrict(response.Body, &result); err != nil {
+	if err := httpjson.DecodeStrict(response.Body, &result); err != nil {
 		return interpretation{}, err
 	}
 	return result, nil
@@ -267,20 +247,8 @@ func unlockCount(ctx context.Context, client *http.Client, baseURL string) (int,
 		State       smartlock.StateName `json:"state"`
 		UnlockCount int                 `json:"unlock_count"`
 	}
-	if err := decodeStrict(response.Body, &metrics); err != nil {
+	if err := httpjson.DecodeStrict(response.Body, &metrics); err != nil {
 		return 0, err
 	}
 	return metrics.UnlockCount, nil
-}
-
-func decodeStrict(reader io.Reader, value any) error {
-	decoder := json.NewDecoder(io.LimitReader(reader, 1<<20))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(value); err != nil {
-		return err
-	}
-	if decoder.Decode(&struct{}{}) != io.EOF {
-		return errors.New("multiple JSON values")
-	}
-	return nil
 }

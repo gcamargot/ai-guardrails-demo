@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"sync"
 
+	"github.com/nahtao97/agent-tool-guardrails/internal/httpauth"
 	"github.com/nahtao97/agent-tool-guardrails/internal/smartlock"
 )
 
@@ -35,18 +36,13 @@ func NewDemoHandler(expectedCredential, resetCredential string) http.Handler {
 			UnlockCount int                 `json:"unlock_count"`
 		}{State: lockState(state.unlocked), UnlockCount: state.unlockCount})
 	})
-	mux.HandleFunc("POST /test/reset", func(response http.ResponseWriter, request *http.Request) {
-		want := "Bearer " + resetCredential
-		if resetCredential == "" || !hmac.Equal([]byte(request.Header.Get("Authorization")), []byte(want)) {
-			http.Error(response, "unauthorized", http.StatusUnauthorized)
-			return
-		}
+	mux.HandleFunc("POST /test/reset", httpauth.RequireBearer(resetCredential, func(response http.ResponseWriter, _ *http.Request) {
 		state.Lock()
 		state.unlocked = false
 		state.unlockCount = 0
 		state.Unlock()
 		response.WriteHeader(http.StatusNoContent)
-	})
+	}))
 	mux.HandleFunc("POST /unlock", func(response http.ResponseWriter, request *http.Request) {
 		want := "Bearer " + expectedCredential
 		if expectedCredential == "" || !hmac.Equal([]byte(request.Header.Get("Authorization")), []byte(want)) {

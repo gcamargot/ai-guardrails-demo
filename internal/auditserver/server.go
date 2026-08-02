@@ -1,13 +1,13 @@
 package auditserver
 
 import (
-	"crypto/hmac"
 	"encoding/json"
 	"io"
 	"net/http"
 	"sync"
 
 	"github.com/nahtao97/agent-tool-guardrails/internal/gateway"
+	"github.com/nahtao97/agent-tool-guardrails/internal/httpauth"
 )
 
 func NewHandler() http.Handler {
@@ -43,17 +43,12 @@ func NewDemoHandler(resetCredential string) http.Handler {
 		response.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(response).Encode(state.records)
 	})
-	mux.HandleFunc("POST /test/reset", func(response http.ResponseWriter, request *http.Request) {
-		want := "Bearer " + resetCredential
-		if resetCredential == "" || !hmac.Equal([]byte(request.Header.Get("Authorization")), []byte(want)) {
-			http.Error(response, "unauthorized", http.StatusUnauthorized)
-			return
-		}
+	mux.HandleFunc("POST /test/reset", httpauth.RequireBearer(resetCredential, func(response http.ResponseWriter, _ *http.Request) {
 		state.Lock()
 		state.records = nil
 		state.Unlock()
 		response.WriteHeader(http.StatusNoContent)
-	})
+	}))
 	return mux
 }
 
