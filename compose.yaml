@@ -9,8 +9,6 @@ services:
       KC_HOSTNAME: http://127.0.0.1:8082
     volumes:
       - ./keycloak/agent-tools-realm.json:/opt/keycloak/data/import/agent-tools-realm.json:ro
-    ports:
-      - "127.0.0.1:8082:8080"
     networks:
       - identity
     healthcheck:
@@ -18,6 +16,25 @@ services:
       interval: 3s
       timeout: 2s
       retries: 30
+
+  oauth-facade:
+    build: .
+    command: /app/oauth-facade
+    environment:
+      OAUTH_BACKEND_URL: http://keycloak:8080
+    depends_on:
+      keycloak:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8082:8082"
+    networks:
+      - public
+      - identity
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8082/healthz"]
+      interval: 2s
+      timeout: 1s
+      retries: 15
 
   opa:
     image: openpolicyagent/opa:1.17.0-static
@@ -247,6 +264,8 @@ services:
         condition: service_healthy
       opa:
         condition: service_started
+      oauth-facade:
+        condition: service_healthy
       outlook:
         condition: service_healthy
       smart-lock:
@@ -311,6 +330,8 @@ services:
         condition: service_healthy
       opa:
         condition: service_started
+      oauth-facade:
+        condition: service_healthy
       outlook:
         condition: service_healthy
       smart-lock:

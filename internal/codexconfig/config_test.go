@@ -16,8 +16,6 @@ func TestProjectConfigNarrowsCodexWithoutClaimingServerAuthority(t *testing.T) {
 		`[mcp_servers.agent_tool_guardrails]`,
 		`url = "http://127.0.0.1:8080/mcp"`,
 		`auth = "oauth"`,
-		`oauth = { client_id = "coding-agent" }`,
-		`oauth_resource = "http://127.0.0.1:8080/mcp"`,
 		`required = true`,
 		`scopes = ["dev.repository.read"]`,
 		`enabled_tools = ["dev.read_repository"]`,
@@ -29,5 +27,8 @@ func TestProjectConfigNarrowsCodexWithoutClaimingServerAuthority(t *testing.T) {
 	}
 	if strings.Contains(config, "smart_lock.unlock") {
 		t.Fatal("Codex client allowlist contains the smart-lock Tool")
+	}
+	if strings.Contains(config, "oauth_resource") {
+		t.Fatal("Codex config duplicates the resource already advertised by RFC 9728 metadata")
 	}
 }

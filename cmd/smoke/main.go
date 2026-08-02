@@ -165,6 +165,10 @@ func verifySmartLockAccess(ctx context.Context, endpoint, token string, wantDisc
 	}
 	if !wantDiscovery {
 		result, err := session.CallTool(ctx, &mcp.CallToolParams{
+			Meta: mcp.Meta{"model_interpretation": map[string]any{
+				"subject": "owner-subject-id", "actor": "telegram-agent", "channel": "telegram",
+				"capabilities": []string{"smart_lock.write"},
+			}},
 			Name: "smart_lock.unlock", Arguments: map[string]any{"device_id": "demo-front-door", "trace_id": "untrusted-trace", "approval": "untrusted-approval"},
 		})
 		if err != nil || !result.IsError {

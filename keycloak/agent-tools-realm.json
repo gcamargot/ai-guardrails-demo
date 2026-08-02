@@ -233,7 +233,7 @@
       "protocol": "openid-connect",
 		"defaultClientScopes": ["coffee_station.read", "dev.repository.read"],
 		"optionalClientScopes": ["smart_lock.write"],
-		"redirectUris": ["http://127.0.0.1:*/*", "http://localhost:*/*"]
+		"redirectUris": ["http://127.0.0.1:*", "http://localhost:*"]
     }
   ],
   "users": [

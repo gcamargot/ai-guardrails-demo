@@ -62,13 +62,23 @@ The Outlook service exposes only authenticated GET routes on the isolated networ
 
 ## Codex as a second MCP client
 
-[`examples/codex/config.toml`](examples/codex/config.toml) is the project configuration fragment for the live demo. Merge its table into a trusted project's `.codex/config.toml`, start the Compose gateway, then run:
+[`examples/codex/config.toml`](examples/codex/config.toml) is the client-control fragment for the live demo. With a current Codex CLI, first register the static OAuth client through the supported command:
+
+```sh
+codex mcp add agent_tool_guardrails \
+  --url http://127.0.0.1:8080/mcp \
+  --oauth-client-id coding-agent
+```
+
+The gateway metadata already declares the OAuth resource, so the Codex configuration intentionally does not repeat `oauth_resource`. Then add the example's `auth`, `required`, `scopes`, `enabled_tools` and approval settings to the generated table, start the Compose gateway, and run this if the add command did not already complete login:
 
 ```sh
 codex mcp login agent_tool_guardrails
 ```
 
 The gateway's `401` challenge points Codex to RFC 9728 protected-resource metadata, which in turn identifies the demo Keycloak issuer. Keycloak authenticates the Owner and issues a PKCE-bound token whose `azp` establishes Actor `coding-agent`; the gateway validates its external issuer, audience, expiry, signature and `dev.repository.read` scope. The server is marked `required`, its client-visible allowlist contains only `dev.read_repository`, and every invocation prompts locally.
+
+Codex CLI 0.146.0 currently drops the RFC 9207 `iss` callback parameter before its own validation. The small `oauth-facade` service proxies Keycloak unchanged except for advertising `authorization_response_iss_parameter_supported=false` in both OIDC and RFC 8414 metadata, the server-side workaround for [openai/codex#34684](https://github.com/openai/codex/issues/34684). Keycloak still performs Authorization Code + S256 PKCE and issues the token; the gateway still validates the real issuer and obtains signing keys directly over the isolated identity network.
 
 Those settings are a useful client defense and UX control, not the Enforcement Boundary. Removing `dev.read_repository` from `enabled_tools` narrows what Codex can use. Adding `smart_lock.unlock` locally cannot broaden authority: server discovery still filters it and a crafted direct `tools/call` is independently denied by OPA before Approval Authority or Smart Lock access. Audit stores `subject_kind=owner` separately from `actor=coding-agent` without persisting the Subject identifier.
 

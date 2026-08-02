@@ -15,4 +15,4 @@
 
 ## Comments
 
-- Implemented a Codex Streamable HTTP OAuth configuration, RFC 9728 discovery, Keycloak Authorization Code + PKCE for Actor `coding-agent`, the exact `dev.read_repository` Tool over an isolated adapter, ticket-07 Rego policy, and black-box evidence that client controls narrow but never broaden gateway authority.
+- Implemented and exercised Codex CLI 0.146.0 Streamable HTTP OAuth login, RFC 9728 discovery, Keycloak Authorization Code + S256 PKCE for Actor `coding-agent`, a narrow RFC 9207 metadata compatibility facade, the exact `dev.read_repository` Tool over an isolated adapter, ticket-07 Rego policy, and black-box evidence that client controls narrow but never broaden gateway authority.
