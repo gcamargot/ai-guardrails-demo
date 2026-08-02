@@ -4,8 +4,10 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
+	"github.com/nahtao97/agent-tool-guardrails/internal/adaptertelemetry"
 	"github.com/nahtao97/agent-tool-guardrails/internal/envconfig"
 	"github.com/nahtao97/agent-tool-guardrails/internal/smartlockserver"
 	"github.com/nahtao97/agent-tool-guardrails/internal/vaultclient"
@@ -21,7 +23,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("initialize smart-lock credential: %v", err)
 	}
-	server := &http.Server{Addr: ":8088", Handler: smartlockserver.NewHandler(credential), ReadHeaderTimeout: 5 * time.Second}
+	server := &http.Server{Addr: ":8088", Handler: adaptertelemetry.NewHandler(smartlockserver.NewHandler(credential), os.Stdout), ReadHeaderTimeout: 5 * time.Second}
 	log.Printf("isolated simulated smart lock listening on %s", server.Addr)
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatal(err)

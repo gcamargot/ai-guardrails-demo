@@ -7,9 +7,9 @@ import (
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/nahtao97/agent-tool-guardrails/internal/approvalauthority"
 	"github.com/nahtao97/agent-tool-guardrails/internal/coffeestationclient"
 	"github.com/nahtao97/agent-tool-guardrails/internal/gateway"
+	"github.com/nahtao97/agent-tool-guardrails/internal/testsupport"
 	"golang.org/x/oauth2"
 )
 
@@ -21,7 +21,8 @@ func TestGatewayReturnsStatusFromProtectedResource(t *testing.T) {
 			t.Errorf("resource path = %q, want /stations/demo-station/status", request.URL.Path)
 		}
 		if request.Header.Get("X-Guardrails-Trace-ID") == "" || request.Header.Get("X-Guardrails-Correlation-ID") == "" ||
-			request.Header.Get("X-Guardrails-Decision-ID") != "resource-test" {
+			request.Header.Get("X-Guardrails-Decision-ID") != "resource-test" || request.Header.Get("Traceparent") == "" ||
+			request.Header.Get("X-Guardrails-Tool") != "coffee_station.get_status" {
 			t.Errorf("missing adapter correlation headers: %v", request.Header)
 		}
 		response.Header().Set("Content-Type", "application/json")
@@ -36,8 +37,8 @@ func TestGatewayReturnsStatusFromProtectedResource(t *testing.T) {
 		Channel:       "streamable-http",
 		Policy:        allowPolicy{},
 		CoffeeStation: coffeestationclient.New(resourceServer.URL, resourceServer.Client()),
-		Approvals:     healthyApprovals{},
-		Audit:         discardAudit{},
+		Approvals:     testsupport.HealthyApprovals{},
+		Audit:         testsupport.DiscardAudit{},
 	}))
 	t.Cleanup(server.Close)
 
@@ -77,16 +78,3 @@ func (allowPolicy) Decide(context.Context, gateway.PolicyInput) (gateway.PolicyD
 }
 
 func (allowPolicy) Health(context.Context) error { return nil }
-
-type healthyApprovals struct{}
-
-func (healthyApprovals) ConsumeExact(context.Context, string, approvalauthority.Binding) (approvalauthority.Consumption, error) {
-	return approvalauthority.Consumption{}, nil
-}
-
-func (healthyApprovals) Health(context.Context) error { return nil }
-
-type discardAudit struct{}
-
-func (discardAudit) Record(context.Context, gateway.AuditRecord) error { return nil }
-func (discardAudit) Health(context.Context) error                      { return nil }

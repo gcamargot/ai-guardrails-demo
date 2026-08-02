@@ -14,6 +14,7 @@ docker compose --profile test run --rm telegram-network-probe
 docker compose --profile test run --rm qwen-network-probe
 docker compose --profile test run --rm codex-network-probe
 
+docker compose --profile test run --no-deps --rm -e FAILURE_MODE=malformed-input smoke
 docker compose exec -T coffee-station wget -q --post-data='' -O /dev/null http://127.0.0.1:8081/test/output/malformed
 docker compose --profile test run --no-deps --rm -e FAILURE_MODE=malformed-output smoke
 docker compose exec -T coffee-station wget -q --post-data='' -O /dev/null http://127.0.0.1:8081/test/output/valid
@@ -33,6 +34,7 @@ for attempt in $(seq 1 30); do
   fi
   sleep 1
 done
+
 if test "$opa_ready" != true; then
   docker compose logs --no-color opa policy-bundle >&2
   echo "OPA did not recover within 30 seconds" >&2
@@ -52,6 +54,18 @@ for forbidden in \
   'ignore previous instructions'; do
   if printf '%s' "$logs" | grep -Fq "$forbidden"; then
     echo "sensitive body, secret or prompt leaked into service logs" >&2
+    exit 1
+  fi
+done
+
+adapter_event="$(printf '%s' "$logs" | grep -m 1 '"stage":"adapter_result"' || true)"
+if test -z "$adapter_event"; then
+  echo "no adapter_result span found in service logs" >&2
+  exit 1
+fi
+for required in '"trace_id":"' '"traceparent":"00-' '"correlation_id":"' '"decision_id":"' '"tool":"' '"outcome":"' '"duration_micros":'; do
+  if ! printf '%s' "$adapter_event" | grep -Fq "$required"; then
+    echo "adapter_result span is missing $required" >&2
     exit 1
   fi
 done

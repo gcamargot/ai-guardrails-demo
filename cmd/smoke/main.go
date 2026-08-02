@@ -145,6 +145,18 @@ func verifyFailClosedMode(ctx context.Context, mode, generalEndpoint, telegramEn
 			log.Fatal("malformed adapter output crossed the Enforcement Boundary")
 		}
 		waitForAuditReason(ctx, auditEndpoint, "malformed_output")
+	case "malformed-input":
+		token := obtainToken(ctx, tokenEndpoint, "coding-agent", "", "owner", "owner-demo-password")
+		session := connectMCP(ctx, generalEndpoint, token)
+		result, err := session.CallTool(ctx, &mcp.CallToolParams{
+			Name:      "coffee_station.get_status",
+			Arguments: map[string]any{"station_id": "demo-station", "command": "brew"},
+		})
+		_ = session.Close()
+		if err == nil && !result.IsError {
+			log.Fatal("malformed input crossed the Enforcement Boundary")
+		}
+		waitForAuditReason(ctx, auditEndpoint, "malformed_input")
 	default:
 		log.Fatalf("unknown FAILURE_MODE %q", mode)
 	}

@@ -19,6 +19,7 @@ func TestCollectorStoresOnlyTypedNonSensitiveAuditRecords(t *testing.T) {
 	client := auditclient.New(server.URL, server.Client())
 	record := gateway.AuditRecord{
 		TraceID: "trace-1", CorrelationID: "correlation-1", DecisionID: "decision-1", SubjectKind: "owner",
+		SubjectRef: "sha256:owner", Stage: "gateway_result",
 		Actor: "coding-agent", Channel: "streamable-http", Operation: "execute", Tool: "coffee_station.get_status",
 		Outcome: "allow", Reason: "owner_demo_station", Rule: "owner_demo_station", PolicyRevision: "ticket-09",
 		Obligations: []gateway.Obligation{}, SafeArguments: map[string]any{"station_id": "demo-station"}, DurationMicros: 42,
@@ -47,6 +48,7 @@ func TestCollectorRejectsSensitiveArgumentKeys(t *testing.T) {
 	client := auditclient.New(server.URL, server.Client())
 	record := gateway.AuditRecord{
 		TraceID: "trace-1", CorrelationID: "correlation-1", DecisionID: "decision-1", SubjectKind: "owner",
+		SubjectRef: "sha256:owner", Stage: "gateway_result",
 		Actor: "coding-agent", Channel: "streamable-http", Operation: "execute", Tool: "coffee_station.get_status",
 		Outcome: "allow", Reason: "owner_demo_station", Rule: "owner_demo_station", PolicyRevision: "ticket-09",
 		Obligations: []gateway.Obligation{}, SafeArguments: map[string]any{"token": "must-not-be-stored"}, DurationMicros: 42,

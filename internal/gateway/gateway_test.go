@@ -271,7 +271,8 @@ func TestToolCallProducesCorrelatedSafeOperationalAudit(t *testing.T) {
 	}
 	if record.SubjectKind != "owner" || record.Actor != "coding-agent" || record.Channel != "streamable-http" ||
 		record.Tool != "coffee_station.get_status" || record.Rule != "owner_demo_station" ||
-		record.PolicyRevision != "ticket-09" || record.Outcome != "allow" || record.DurationMicros < 0 {
+		record.PolicyRevision != "ticket-09" || record.Outcome != "allow" || record.DurationMicros < 0 ||
+		record.SubjectRef == "" || strings.Contains(record.SubjectRef, "owner-subject-id") || record.Stage != "gateway_result" {
 		t.Fatalf("operational audit record=%#v", record)
 	}
 	wantArguments := map[string]any{"station_id": "demo-station"}
@@ -281,6 +282,30 @@ func TestToolCallProducesCorrelatedSafeOperationalAudit(t *testing.T) {
 	encoded, _ := json.Marshal(record)
 	if strings.Contains(string(encoded), "SECRET_PROMPT_MUST_NOT_BE_LOGGED") || strings.Contains(string(encoded), "secret-token") {
 		t.Fatalf("audit leaked prompt or token: %s", encoded)
+	}
+}
+
+func TestAuditDistinguishesSubjectsWithoutPersistingRawIdentifiers(t *testing.T) {
+	t.Parallel()
+	audit := &capturingAudit{}
+	for _, subject := range []gateway.Subject{"external-alice-subject-id", "external-bob-subject-id"} {
+		session := connectGateway(t, gateway.Dependencies{
+			Identity: fixedIdentity{Subject: subject, Actor: "telegram-agent", TurnCapabilities: []gateway.Capability{"coffee_station.read"}},
+			Channel:  "telegram", Policy: observablePolicy{}, CoffeeStation: readyCoffeeStation{}, Audit: audit,
+		})
+		result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+			Name: "coffee_station.get_status", Arguments: map[string]any{"station_id": "demo-station"},
+		})
+		if err != nil || result.IsError {
+			t.Fatalf("Tool Call for %s failed: result=%#v err=%v", subject, result, err)
+		}
+	}
+	if len(audit.records) != 2 || audit.records[0].SubjectRef == audit.records[1].SubjectRef {
+		t.Fatalf("pseudonymous Subject refs=%#v", audit.records)
+	}
+	encoded, _ := json.Marshal(audit.records)
+	if strings.Contains(string(encoded), "external-alice-subject-id") || strings.Contains(string(encoded), "external-bob-subject-id") {
+		t.Fatalf("audit persisted raw Subject: %s", encoded)
 	}
 }
 
@@ -991,9 +1016,11 @@ func TestAvailabilityOutsideRequestedWindowIsRejectedAtTheMCPBoundary(t *testing
 func TestUnknownInputFieldIsRejected(t *testing.T) {
 	t.Parallel()
 
+	audit := &capturingAudit{}
 	session := connectGateway(t, gateway.Dependencies{
 		Policy:        unreachablePolicy{t: t},
 		CoffeeStation: unreachableCoffeeStation{t: t},
+		Audit:         audit,
 	})
 
 	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
@@ -1008,6 +1035,9 @@ func TestUnknownInputFieldIsRejected(t *testing.T) {
 	}
 	if !result.IsError {
 		t.Fatal("Tool Call with an unknown field succeeded")
+	}
+	if len(audit.records) != 1 || audit.records[0].Reason != "malformed_input" || audit.records[0].Outcome != "deny" {
+		t.Fatalf("malformed-input audit=%#v", audit.records)
 	}
 }
 

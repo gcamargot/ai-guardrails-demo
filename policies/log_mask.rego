@@ -15,3 +15,5 @@ mask contains sprintf("/input/arguments/%s", [key]) if {
 	some key in sensitive_argument_keys
 	key in object.keys(input.input.arguments)
 }
+
+mask contains "/input/security_context/subject"

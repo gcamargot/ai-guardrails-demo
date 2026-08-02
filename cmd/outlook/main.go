@@ -4,8 +4,10 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
+	"github.com/nahtao97/agent-tool-guardrails/internal/adaptertelemetry"
 	"github.com/nahtao97/agent-tool-guardrails/internal/envconfig"
 	"github.com/nahtao97/agent-tool-guardrails/internal/outlookserver"
 	"github.com/nahtao97/agent-tool-guardrails/internal/vaultclient"
@@ -23,7 +25,7 @@ func main() {
 		log.Fatalf("initialize Outlook credential: %v", err)
 	}
 	server := &http.Server{
-		Addr: ":8087", Handler: outlookserver.NewHandler(credential), ReadHeaderTimeout: 5 * time.Second,
+		Addr: ":8087", Handler: adaptertelemetry.NewHandler(outlookserver.NewHandler(credential), os.Stdout), ReadHeaderTimeout: 5 * time.Second,
 	}
 	log.Printf("isolated read-only demo Outlook listening on %s", server.Addr)
 	if err := server.ListenAndServe(); err != nil {

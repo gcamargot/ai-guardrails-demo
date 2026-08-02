@@ -3,6 +3,7 @@ package gateway
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -78,6 +79,7 @@ func (verify IdentityVerifierFunc) Verify(ctx context.Context, token string) (Tr
 
 type PolicyInput struct {
 	TraceID         string          `json:"trace_id"`
+	SubjectRef      string          `json:"subject_ref"`
 	CorrelationID   CorrelationID   `json:"correlation_id"`
 	SecurityContext SecurityContext `json:"security_context"`
 	Operation       PolicyOperation `json:"operation"`
@@ -99,6 +101,7 @@ type AuditRecord struct {
 	CorrelationID  CorrelationID   `json:"correlation_id,omitempty"`
 	DecisionID     string          `json:"decision_id"`
 	SubjectKind    string          `json:"subject_kind"`
+	SubjectRef     string          `json:"subject_ref"`
 	Actor          Actor           `json:"actor"`
 	Channel        Channel         `json:"channel"`
 	Operation      PolicyOperation `json:"operation"`
@@ -110,6 +113,7 @@ type AuditRecord struct {
 	PolicyRevision string          `json:"policy_revision"`
 	Obligations    []Obligation    `json:"obligations"`
 	DurationMicros int64           `json:"duration_micros"`
+	Stage          string          `json:"stage"`
 }
 
 type AuditSink interface {
@@ -825,6 +829,7 @@ func newPolicyInput(ctx context.Context, securityContext SecurityContext, operat
 	traceID, _, _ := ToolCallCorrelation(ctx)
 	return PolicyInput{
 		TraceID:         traceID,
+		SubjectRef:      subjectRef(securityContext.Subject),
 		CorrelationID:   CorrelationID(fmt.Sprintf("policy-%d-%d", time.Now().UnixNano(), policyCorrelationSequence.Add(1))),
 		SecurityContext: securityContext,
 		Operation:       operation,
@@ -909,10 +914,18 @@ func recordAuditWithDetails(ctx context.Context, sink AuditSink, securityContext
 	}
 	return sink.Record(ctx, AuditRecord{
 		TraceID: traceID, CorrelationID: decision.CorrelationID, DecisionID: decision.DecisionID, SubjectKind: subjectKind(securityContext.Subject),
-		Actor: securityContext.Actor, Channel: securityContext.Channel, Operation: operation, Tool: tool,
+		SubjectRef: subjectRef(securityContext.Subject), Actor: securityContext.Actor, Channel: securityContext.Channel, Operation: operation, Tool: tool,
 		Outcome: outcome, Reason: reason, SafeArguments: safeArguments, Rule: decision.Reason,
-		PolicyRevision: decision.PolicyRevision, Obligations: decision.Obligations, DurationMicros: duration.Microseconds(),
+		PolicyRevision: decision.PolicyRevision, Obligations: decision.Obligations, DurationMicros: duration.Microseconds(), Stage: "gateway_result",
 	})
+}
+
+func subjectRef(subject Subject) string {
+	if subject == "" {
+		return "unknown"
+	}
+	digest := sha256.Sum256([]byte(subject))
+	return fmt.Sprintf("sha256:%x", digest[:12])
 }
 
 func subjectKind(subject Subject) string {

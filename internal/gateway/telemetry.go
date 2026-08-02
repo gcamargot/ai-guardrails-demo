@@ -2,6 +2,8 @@ package gateway
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -11,9 +13,10 @@ import (
 )
 
 const (
-	traceHeader       = "X-Guardrails-Trace-ID"
-	correlationHeader = "X-Guardrails-Correlation-ID"
-	decisionHeader    = "X-Guardrails-Decision-ID"
+	TraceHeader       = "X-Guardrails-Trace-ID"
+	CorrelationHeader = "X-Guardrails-Correlation-ID"
+	DecisionHeader    = "X-Guardrails-Decision-ID"
+	ToolHeader        = "X-Guardrails-Tool"
 )
 
 type toolCallObservationKey struct{}
@@ -31,11 +34,27 @@ var traceSequence atomic.Uint64
 
 func beginToolCall(ctx context.Context, tool ToolName, raw json.RawMessage) (context.Context, *toolCallObservation) {
 	observation := &toolCallObservation{
-		traceID:       fmt.Sprintf("trace-%d-%d", time.Now().UnixNano(), traceSequence.Add(1)),
+		traceID:       randomTraceID(),
 		tool:          tool,
 		safeArguments: safeArguments(tool, raw),
 	}
 	return context.WithValue(ctx, toolCallObservationKey{}, observation), observation
+}
+
+func randomTraceID() string {
+	value := make([]byte, 16)
+	if _, err := rand.Read(value); err == nil {
+		return hex.EncodeToString(value)
+	}
+	return fmt.Sprintf("%032x", uint64(time.Now().UnixNano())^traceSequence.Add(1))
+}
+
+func randomSpanID() string {
+	value := make([]byte, 8)
+	if _, err := rand.Read(value); err == nil {
+		return hex.EncodeToString(value)
+	}
+	return fmt.Sprintf("%016x", uint64(time.Now().UnixNano())^traceSequence.Add(1))
 }
 
 func observeDecision(ctx context.Context, decision PolicyDecision) {
@@ -73,14 +92,33 @@ func ToolCallCorrelation(ctx context.Context) (string, CorrelationID, string) {
 func ApplyToolCallCorrelation(ctx context.Context, request *http.Request) {
 	traceID, correlationID, decisionID := ToolCallCorrelation(ctx)
 	if traceID != "" {
-		request.Header.Set(traceHeader, traceID)
+		request.Header.Set(TraceHeader, traceID)
+		request.Header.Set("Traceparent", "00-"+traceID+"-"+randomSpanID()+"-01")
 	}
 	if correlationID != "" {
-		request.Header.Set(correlationHeader, string(correlationID))
+		request.Header.Set(CorrelationHeader, string(correlationID))
 	}
 	if decisionID != "" {
-		request.Header.Set(decisionHeader, decisionID)
+		request.Header.Set(DecisionHeader, decisionID)
 	}
+	if observation, ok := ctx.Value(toolCallObservationKey{}).(*toolCallObservation); ok {
+		_, tool, _, _, _ := observation.snapshot()
+		request.Header.Set(ToolHeader, string(tool))
+	}
+}
+
+var auditArgumentKeysByTool = map[ToolName]map[string]struct{}{
+	"mcp.request":           {},
+	coffeeStationStatusTool: {"station_id": {}},
+	findAvailabilityTool:    {"start": {}, "end": {}},
+	submitMeetingTool:       {"start": {}, "end": {}},
+	reviewMeetingTool:       {"proposal_id": {}},
+	approveMeetingTool:      {"proposal_id": {}},
+	denyMeetingTool:         {"proposal_id": {}},
+	unlockSmartLockTool:     {"device_id": {}},
+	searchOutlookTool:       {"limit": {}, "query_length": {}},
+	readOutlookTool:         {"message_id": {}},
+	readRepositoryTool:      {"path": {}},
 }
 
 func safeArguments(tool ToolName, raw json.RawMessage) map[string]any {
@@ -88,39 +126,37 @@ func safeArguments(tool ToolName, raw json.RawMessage) map[string]any {
 	if json.Unmarshal(raw, &arguments) != nil {
 		return map[string]any{}
 	}
-	copyKeys := func(keys ...string) map[string]any {
-		safe := make(map[string]any, len(keys))
-		for _, key := range keys {
-			if value, ok := arguments[key]; ok {
-				safe[key] = value
-			}
-		}
-		return safe
-	}
-	switch tool {
-	case coffeeStationStatusTool:
-		return copyKeys("station_id")
-	case findAvailabilityTool:
-		return copyKeys("start", "end")
-	case submitMeetingTool:
-		return copyKeys("start", "end")
-	case reviewMeetingTool, approveMeetingTool, denyMeetingTool:
-		return copyKeys("proposal_id")
-	case unlockSmartLockTool:
-		return copyKeys("device_id")
-	case searchOutlookTool:
-		safe := copyKeys("limit")
-		if query, ok := arguments["query"].(string); ok {
-			safe["query_length"] = len(query)
-		}
-		return safe
-	case readOutlookTool:
-		return copyKeys("message_id")
-	case readRepositoryTool:
-		return copyKeys("path")
-	default:
+	allowed, ok := auditArgumentKeysByTool[tool]
+	if !ok {
 		return map[string]any{}
 	}
+	safe := make(map[string]any, len(allowed))
+	for key := range allowed {
+		if key == "query_length" {
+			if query, ok := arguments["query"].(string); ok {
+				safe[key] = len(query)
+			}
+			continue
+		}
+		if value, ok := arguments[key]; ok {
+			safe[key] = value
+		}
+	}
+	return safe
+}
+
+// AuditArgumentsAllowed is the collector's authoritative confidentiality schema.
+func AuditArgumentsAllowed(tool ToolName, arguments map[string]any) bool {
+	allowed, ok := auditArgumentKeysByTool[tool]
+	if !ok {
+		return false
+	}
+	for key := range arguments {
+		if _, ok := allowed[key]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 type correlatedPolicy struct{ PolicyClient }

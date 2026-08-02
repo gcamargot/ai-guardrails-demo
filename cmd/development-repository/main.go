@@ -6,6 +6,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/nahtao97/agent-tool-guardrails/internal/adaptertelemetry"
 	"github.com/nahtao97/agent-tool-guardrails/internal/developmentserver"
 	"github.com/nahtao97/agent-tool-guardrails/internal/envconfig"
 )
@@ -16,7 +17,7 @@ func main() {
 		log.Fatalf("read allowlisted repository artifact: %v", err)
 	}
 	server := &http.Server{
-		Addr: ":8090", Handler: developmentserver.NewHandler(string(content)),
+		Addr: ":8090", Handler: adaptertelemetry.NewHandler(developmentserver.NewHandler(string(content)), os.Stdout),
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second,
 	}
 	log.Printf("demo development repository listening on %s", server.Addr)

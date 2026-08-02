@@ -6,6 +6,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/nahtao97/agent-tool-guardrails/internal/adaptertelemetry"
 	"github.com/nahtao97/agent-tool-guardrails/internal/coffeestationserver"
 )
 
@@ -16,7 +17,7 @@ func main() {
 	}
 	server := &http.Server{
 		Addr:              ":" + port,
-		Handler:           coffeestationserver.NewHandler(),
+		Handler:           adaptertelemetry.NewHandler(coffeestationserver.NewHandler(), os.Stdout),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,
