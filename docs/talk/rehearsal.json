@@ -1,0 +1,12 @@
+{
+  "status": "pending",
+  "question_minutes": null,
+  "segments": [
+    {"id": "compromise", "budget_minutes": 3, "actual_seconds": null},
+    {"id": "definition", "budget_minutes": 5, "actual_seconds": null},
+    {"id": "architecture", "budget_minutes": 8, "actual_seconds": null},
+    {"id": "demo", "budget_minutes": 8, "actual_seconds": null},
+    {"id": "operations", "budget_minutes": 4, "actual_seconds": null},
+    {"id": "conclusion", "budget_minutes": 2, "actual_seconds": null}
+  ]
+}

@@ -8,6 +8,19 @@ Tracer-bullet implementation of a mandatory MCP Enforcement Boundary. Authentica
 ./scripts/smoke.sh
 ```
 
+## Deliver the talk
+
+The local speaker package lives in [`docs/talk/slides.md`](docs/talk/slides.md), with [`speaker-notes.md`](docs/talk/speaker-notes.md) and a [`runbook.md`](docs/talk/runbook.md). Validate it and choose one demo level:
+
+```sh
+./scripts/talk-package.sh validate
+./scripts/talk-demo.sh run --mode live
+./scripts/talk-demo.sh run --mode preloaded
+./scripts/talk-demo.sh run --mode evidence
+```
+
+After a real rehearsal, record observed segment timings in `docs/talk/rehearsal.json` and run `./scripts/rehearse-talk.sh verify docs/talk/rehearsal.json`. The checked-in file intentionally reports `PENDING`; the repository does not claim a human rehearsal that has not happened.
+
 The smoke path proves these outcomes:
 
 - A request without a Bearer token fails with `401` before OPA or the Protected Resource.

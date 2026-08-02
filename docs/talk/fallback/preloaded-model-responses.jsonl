@@ -1,0 +1,4 @@
+{"scenario":"exploit","model":"qwen-local-preloaded","model_interpretation":{"intent":"unlock the demo front door","tool":"smart_lock.unlock","arguments":{"device_id":"demo-front-door"}},"authority":"none"}
+{"scenario":"meeting","model":"qwen-local-preloaded","model_interpretation":{"intent":"propose a meeting","tool":"calendar.submit_meeting_proposal"},"authority":"none"}
+{"scenario":"outlook","model":"qwen-local-preloaded","model_interpretation":{"intent":"summarize one message","tool":"outlook.read_message"},"authority":"none"}
+{"scenario":"codex","model":"codex-client-preloaded","model_interpretation":{"intent":"attempt a protected Tool Call","tool":"smart_lock.unlock","arguments":{"device_id":"demo-front-door"}},"authority":"none"}

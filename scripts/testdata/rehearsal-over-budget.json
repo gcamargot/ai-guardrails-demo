@@ -1,0 +1,12 @@
+{
+  "status": "observed",
+  "question_minutes": 7,
+  "segments": [
+    {"id": "compromise", "budget_minutes": 3, "actual_seconds": 180},
+    {"id": "definition", "budget_minutes": 5, "actual_seconds": 300},
+    {"id": "architecture", "budget_minutes": 8, "actual_seconds": 480},
+    {"id": "demo", "budget_minutes": 8, "actual_seconds": 540},
+    {"id": "operations", "budget_minutes": 4, "actual_seconds": 240},
+    {"id": "conclusion", "budget_minutes": 2, "actual_seconds": 120}
+  ]
+}
