@@ -42,19 +42,19 @@ func beginToolCall(ctx context.Context, tool ToolName, raw json.RawMessage) (con
 }
 
 func randomTraceID() string {
-	value := make([]byte, 16)
-	if _, err := rand.Read(value); err == nil {
-		return hex.EncodeToString(value)
-	}
-	return fmt.Sprintf("%032x", uint64(time.Now().UnixNano())^traceSequence.Add(1))
+	return randomHexID(16)
 }
 
 func randomSpanID() string {
-	value := make([]byte, 8)
+	return randomHexID(8)
+}
+
+func randomHexID(byteCount int) string {
+	value := make([]byte, byteCount)
 	if _, err := rand.Read(value); err == nil {
 		return hex.EncodeToString(value)
 	}
-	return fmt.Sprintf("%016x", uint64(time.Now().UnixNano())^traceSequence.Add(1))
+	return fmt.Sprintf("%0*x", byteCount*2, uint64(time.Now().UnixNano())^traceSequence.Add(1))
 }
 
 func observeDecision(ctx context.Context, decision PolicyDecision) {
