@@ -1,6 +1,6 @@
 # Agent Tool Guardrails
 
-Tracer-bullet implementation of a mandatory MCP Enforcement Boundary. Authenticated clients can call narrow Tools for the demo coffee station, calendar and read-only Outlook resources. The Go gateway validates signed identity, composes a Security Context, obtains an OPA Policy Decision, calls network-isolated simulated Protected Resources, validates and minimizes their responses, and returns structured MCP content with the OPA `decision_id` and policy revision.
+Tracer-bullet implementation of a mandatory MCP Enforcement Boundary. Authenticated clients can call narrow Tools for the demo coffee station, calendar and read-only Outlook resources. The Go gateway validates signed identity, composes a Security Context, obtains an OPA Policy Decision, calls network-isolated simulated Protected Resources, validates and minimizes their responses, and returns structured MCP content with the correlation identifier, OPA `decision_id`, obligations and active policy revision.
 
 ## Run
 
@@ -12,7 +12,7 @@ The smoke path proves these outcomes:
 
 - A request without a Bearer token fails with `401` before OPA or the Protected Resource.
 - Keycloak issues signed tokens for `telegram-agent` and `coding-agent` with the same authenticated Subject and distinct Actors.
-- Both Actors may read `demo-station` and receive `state: ready` through policy revision `ticket-07`.
+- Both Actors may read `demo-station` and receive `state: ready` through policy revision `ticket-08`.
 - The Owner's coding Actor can use the exact `dev.read_repository` Tool for allowlisted `CONTEXT.md`; the isolated adapter rejects other paths.
 - The coding Actor does not discover `smart_lock.unlock`. A crafted raw MCP call that bypasses Codex's allowlist and approval prompt is still denied by OPA, produces no Effect, and emits audit evidence separating Owner Subject from `coding-agent` Actor.
 - A forged Model Interpretation claiming another user, Actor or sensitive capability cannot alter the effective Security Context.
@@ -82,6 +82,14 @@ Codex CLI 0.146.0 currently drops the RFC 9207 `iss` callback parameter before i
 
 Those settings are a useful client defense and UX control, not the Enforcement Boundary. Removing `dev.read_repository` from `enabled_tools` narrows what Codex can use. Adding `smart_lock.unlock` locally cannot broaden authority: server discovery still filters it and a crafted direct `tools/call` is independently denied by OPA before Approval Authority or Smart Lock access. Audit stores `subject_kind=owner` separately from `actor=coding-agent` without persisting the Subject identifier.
 
+## Tested and signed Policy Artifacts
+
+[`scripts/policy-ci.sh`](scripts/policy-ci.sh) is the single publishing path. It rejects unformatted Rego, strict compilation failures, an empty or failing unit-test suite, and an incomplete ownership contract before producing anything. Only after every gate succeeds does it build a revisioned ES256 bundle under `.artifacts/policy/`. [`scripts/policy-ci-test.sh`](scripts/policy-ci-test.sh) runs an executable fixture for each rejection mode plus the valid publishing path.
+
+OPA no longer mounts policy source. It downloads the artifact from the internal Bundle Service, verifies its signature against the independently configured public key, and becomes ready only after the first bundle activates. Every Policy Decision echoes a gateway-generated `correlation_id`, its `decision_id`, obligations and the revision stored inside the active artifact. The smoke offers OPA an update signed by an untrusted key, observes the signature error through Status API, verifies that `active_revision` remains `ticket-08`, and successfully evaluates another Tool Call against that last good revision.
+
+The EC private keys under `policies/keys/` are synthetic fixtures for this isolated demo and must never be reused. A production pipeline would keep the signing key in a KMS, HSM or Vault transit engine and distribute only its public key to OPA. [`policies/OWNERS.md`](policies/OWNERS.md) requires two independent approvals for sensitive policy changes: Platform/Security for the Enforcement Boundary and signing workflow, plus the relevant Protected Resource owner for intended authority and constraints.
+
 ## Test
 
 Go is intentionally run in the pinned container used by the build:
@@ -97,6 +105,8 @@ docker run --rm \
   -v "$PWD/policies:/policies:ro" \
   openpolicyagent/opa:1.17.0-static \
   test /policies
+
+./scripts/policy-ci-test.sh
 ```
 
 The demo pins Keycloak `26.7.0`, OPA `1.17.0`, Vault `1.21.4` and Go `1.25.7`. The smoke teardown removes all containers and networks after either success or failure.

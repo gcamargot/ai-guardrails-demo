@@ -1,0 +1,3 @@
+package fixture
+
+allow := true

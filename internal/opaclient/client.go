@@ -57,9 +57,11 @@ func (client *Client) Decide(ctx context.Context, input gateway.PolicyInput) (ga
 	var document struct {
 		DecisionID string `json:"decision_id"`
 		Result     *struct {
-			Allow          bool   `json:"allow"`
-			PolicyRevision string `json:"policy_revision"`
-			Reason         string `json:"reason"`
+			Allow          bool                  `json:"allow"`
+			CorrelationID  gateway.CorrelationID `json:"correlation_id"`
+			Obligations    []gateway.Obligation  `json:"obligations"`
+			PolicyRevision string                `json:"policy_revision"`
+			Reason         string                `json:"reason"`
 		} `json:"result"`
 	}
 	decoder := json.NewDecoder(io.LimitReader(response.Body, maxResponseBytes))
@@ -72,12 +74,20 @@ func (client *Client) Decide(ctx context.Context, input gateway.PolicyInput) (ga
 	if document.DecisionID == "" {
 		return gateway.PolicyDecision{}, errors.New("OPA decision_id is missing")
 	}
+	if document.Result.CorrelationID == "" {
+		return gateway.PolicyDecision{}, errors.New("OPA correlation_id is missing")
+	}
+	if document.Result.CorrelationID != input.CorrelationID {
+		return gateway.PolicyDecision{}, errors.New("OPA correlation_id does not match policy input")
+	}
 	if document.Result.PolicyRevision == "" {
 		return gateway.PolicyDecision{}, errors.New("OPA policy_revision is missing")
 	}
 	return gateway.PolicyDecision{
 		Allow:          document.Result.Allow,
+		CorrelationID:  document.Result.CorrelationID,
 		DecisionID:     document.DecisionID,
+		Obligations:    document.Result.Obligations,
 		PolicyRevision: document.Result.PolicyRevision,
 		Reason:         document.Result.Reason,
 	}, nil

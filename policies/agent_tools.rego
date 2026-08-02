@@ -1,10 +1,18 @@
 package agent_tools
 
-default decision := {
-	"allow":           false,
-	"policy_revision": "ticket-07",
-	"reason":          "default_deny",
+policy_revision := data.policy_metadata.revision
+
+policy_decision(allow, reason, obligations) := {
+	"allow": allow,
+	"correlation_id": object.get(input, "correlation_id", "missing"),
+	"obligations": obligations,
+	"policy_revision": policy_revision,
+	"reason": reason,
 }
+
+default authorization := {"allow": false, "obligations": [], "reason": "default_deny"}
+
+decision := policy_decision(authorization.allow, authorization.reason, authorization.obligations)
 
 eligible_owner_coding_repository if {
 	input.security_context.subject == "owner-subject-id"
@@ -14,20 +22,12 @@ eligible_owner_coding_repository if {
 	input.tool == "dev.read_repository"
 }
 
-decision := {
-	"allow":           true,
-	"policy_revision": "ticket-07",
-	"reason":          "owner_coding_repository_read",
-} if {
+authorization := {"allow": true, "obligations": [], "reason": "owner_coding_repository_read"} if {
 	eligible_owner_coding_repository
 	input.operation == "discover"
 }
 
-decision := {
-	"allow":           true,
-	"policy_revision": "ticket-07",
-	"reason":          "owner_coding_repository_read",
-} if {
+authorization := {"allow": true, "obligations": [], "reason": "owner_coding_repository_read"} if {
 	eligible_owner_coding_repository
 	input.operation == "execute"
 	input.arguments == {"path": "CONTEXT.md"}
@@ -41,31 +41,19 @@ eligible_owner_outlook if {
 	input.tool in {"outlook.search_messages", "outlook.read_message"}
 }
 
-decision := {
-	"allow":           true,
-	"policy_revision": "ticket-07",
-	"reason":          "owner_outlook_read_discovery",
-} if {
+authorization := {"allow": true, "obligations": [], "reason": "owner_outlook_read_discovery"} if {
 	eligible_owner_outlook
 	input.operation == "discover"
 }
 
-decision := {
-	"allow":           true,
-	"policy_revision": "ticket-07",
-	"reason":          "owner_exact_outlook_message",
-} if {
+authorization := {"allow": true, "obligations": [], "reason": "owner_exact_outlook_message"} if {
 	eligible_owner_outlook
 	input.operation == "execute"
 	input.tool == "outlook.read_message"
 	input.arguments.message_id == "demo-injection-message"
 }
 
-decision := {
-	"allow":           true,
-	"policy_revision": "ticket-07",
-	"reason":          "owner_bounded_outlook_search",
-} if {
+authorization := {"allow": true, "obligations": [], "reason": "owner_bounded_outlook_search"} if {
 	eligible_owner_outlook
 	input.operation == "execute"
 	input.tool == "outlook.search_messages"
@@ -84,21 +72,13 @@ eligible_owner_tool if {
 	input.tool == "coffee_station.get_status"
 }
 
-decision := {
-	"allow":           true,
-	"policy_revision": "ticket-07",
-	"reason":          "owner_demo_station",
-} if {
+authorization := {"allow": true, "obligations": [], "reason": "owner_demo_station"} if {
 	eligible_owner_tool
 	input.operation == "execute"
 	input.arguments.station_id == "demo-station"
 }
 
-decision := {
-	"allow":           true,
-	"policy_revision": "ticket-07",
-	"reason":          "owner_tool_discovery",
-} if {
+authorization := {"allow": true, "obligations": [], "reason": "owner_tool_discovery"} if {
 	eligible_owner_tool
 	input.operation == "discover"
 }
@@ -117,7 +97,7 @@ availability_window_allowed if {
 	now := time.now_ns()
 	start >= now
 	end > start
-	end <= now + (14 * 24 * 60 * 60 * 1000000000)
+	end <= now + ((((14 * 24) * 60) * 60) * 1000000000)
 	time.weekday(start) in {"Monday", "Tuesday", "Wednesday", "Thursday", "Friday"}
 	time.weekday(end) == time.weekday(start)
 	start_clock := time.clock([start, "UTC"])
@@ -134,21 +114,13 @@ working_day_end(clock) if {
 	clock == [17, 0, 0]
 }
 
-decision := {
-	"allow":           true,
-	"policy_revision": "ticket-07",
-	"reason":          "external_free_busy",
-} if {
+authorization := {"allow": true, "obligations": [], "reason": "external_free_busy"} if {
 	eligible_external_availability
 	input.operation == "execute"
 	availability_window_allowed
 }
 
-decision := {
-	"allow":           true,
-	"policy_revision": "ticket-07",
-	"reason":          "external_availability_discovery",
-} if {
+authorization := {"allow": true, "obligations": [], "reason": "external_availability_discovery"} if {
 	eligible_external_availability
 	input.operation == "discover"
 }
@@ -161,13 +133,28 @@ eligible_external_proposal if {
 	input.tool == "calendar.submit_meeting_proposal"
 }
 
-decision := {
-	"allow":           true,
-	"policy_revision": "ticket-07",
-	"reason":          "external_meeting_proposal",
-} if {
+authorization := {"allow": true, "obligations": [], "reason": "external_meeting_proposal"} if {
 	eligible_external_proposal
-	input.operation in {"discover", "execute"}
+	input.operation == "discover"
+}
+
+authorization := {"allow": true, "obligations": [], "reason": "external_meeting_proposal"} if {
+	eligible_external_proposal
+	input.operation == "execute"
+	meeting_proposal_arguments_allowed
+}
+
+meeting_proposal_arguments_allowed if {
+	start := time.parse_rfc3339_ns(input.arguments.start)
+	end := time.parse_rfc3339_ns(input.arguments.end)
+	end > start
+	end <= start + (((2 * 60) * 60) * 1000000000)
+	is_string(input.arguments.reason)
+	input.arguments.reason != ""
+	count(input.arguments.reason) <= 200
+	is_string(input.arguments.contact)
+	input.arguments.contact != ""
+	count(input.arguments.contact) <= 320
 }
 
 eligible_owner_meeting_approval if {
@@ -178,13 +165,28 @@ eligible_owner_meeting_approval if {
 	input.tool in {"calendar.review_meeting_proposal", "calendar.approve_meeting_proposal", "calendar.deny_meeting_proposal"}
 }
 
-decision := {
-	"allow":           true,
-	"policy_revision": "ticket-07",
-	"reason":          "owner_exact_meeting_approval",
-} if {
+authorization := {"allow": true, "obligations": ["exact_approval"], "reason": "owner_exact_meeting_approval"} if {
 	eligible_owner_meeting_approval
-	input.operation in {"discover", "execute"}
+	input.operation == "discover"
+}
+
+authorization := {"allow": true, "obligations": [], "reason": "owner_meeting_review"} if {
+	eligible_owner_meeting_approval
+	input.operation == "execute"
+	input.tool == "calendar.review_meeting_proposal"
+	proposal_reference_allowed
+}
+
+authorization := {"allow": true, "obligations": ["exact_approval"], "reason": "owner_exact_meeting_approval"} if {
+	eligible_owner_meeting_approval
+	input.operation == "execute"
+	input.tool in {"calendar.approve_meeting_proposal", "calendar.deny_meeting_proposal"}
+	proposal_reference_allowed
+}
+
+proposal_reference_allowed if {
+	is_string(input.arguments.proposal_id)
+	regex.match("^proposal-[a-zA-Z0-9-]+$", input.arguments.proposal_id)
 }
 
 eligible_owner_smart_lock if {
@@ -195,20 +197,12 @@ eligible_owner_smart_lock if {
 	input.tool == "smart_lock.unlock"
 }
 
-decision := {
-	"allow":           true,
-	"policy_revision": "ticket-07",
-	"reason":          "owner_exact_smart_lock",
-} if {
+authorization := {"allow": true, "obligations": ["exact_approval"], "reason": "owner_exact_smart_lock"} if {
 	eligible_owner_smart_lock
 	input.operation == "discover"
 }
 
-decision := {
-	"allow":           true,
-	"policy_revision": "ticket-07",
-	"reason":          "owner_exact_smart_lock",
-} if {
+authorization := {"allow": true, "obligations": ["exact_approval"], "reason": "owner_exact_smart_lock"} if {
 	eligible_owner_smart_lock
 	input.operation == "execute"
 	input.arguments == {"device_id": "demo-front-door"}

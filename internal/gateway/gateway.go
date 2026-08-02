@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -26,6 +27,8 @@ type ToolName string
 type PolicyOperation string
 type StationID string
 type LockDeviceID = smartlock.DeviceID
+type CorrelationID string
+type Obligation string
 
 const (
 	coffeeStationStatusTool ToolName        = "coffee_station.get_status"
@@ -66,6 +69,7 @@ func (verify IdentityVerifierFunc) Verify(ctx context.Context, token string) (Tr
 }
 
 type PolicyInput struct {
+	CorrelationID   CorrelationID   `json:"correlation_id"`
 	SecurityContext SecurityContext `json:"security_context"`
 	Operation       PolicyOperation `json:"operation"`
 	Tool            ToolName        `json:"tool"`
@@ -73,22 +77,25 @@ type PolicyInput struct {
 }
 
 type PolicyDecision struct {
-	Allow          bool   `json:"allow"`
-	DecisionID     string `json:"decision_id"`
-	PolicyRevision string `json:"policy_revision"`
-	Reason         string `json:"reason"`
+	Allow          bool          `json:"allow"`
+	CorrelationID  CorrelationID `json:"correlation_id"`
+	DecisionID     string        `json:"decision_id"`
+	Obligations    []Obligation  `json:"obligations"`
+	PolicyRevision string        `json:"policy_revision"`
+	Reason         string        `json:"reason"`
 }
 
 type AuditRecord struct {
-	TraceID     string          `json:"trace_id,omitempty"`
-	DecisionID  string          `json:"decision_id"`
-	SubjectKind string          `json:"subject_kind"`
-	Actor       Actor           `json:"actor"`
-	Channel     Channel         `json:"channel"`
-	Operation   PolicyOperation `json:"operation"`
-	Tool        ToolName        `json:"tool"`
-	Outcome     string          `json:"outcome"`
-	Reason      string          `json:"reason"`
+	TraceID       string          `json:"trace_id,omitempty"`
+	CorrelationID CorrelationID   `json:"correlation_id,omitempty"`
+	DecisionID    string          `json:"decision_id"`
+	SubjectKind   string          `json:"subject_kind"`
+	Actor         Actor           `json:"actor"`
+	Channel       Channel         `json:"channel"`
+	Operation     PolicyOperation `json:"operation"`
+	Tool          ToolName        `json:"tool"`
+	Outcome       string          `json:"outcome"`
+	Reason        string          `json:"reason"`
 }
 
 type AuditSink interface {
@@ -325,11 +332,9 @@ func newMCPServer(deps Dependencies, securityContext SecurityContext) *mcp.Serve
 			}
 			filtered := make([]*mcp.Tool, 0, len(listed.Tools))
 			for _, tool := range listed.Tools {
-				decision, decisionErr := deps.Policy.Decide(ctx, PolicyInput{
-					SecurityContext: securityContext,
-					Operation:       discoverOperation,
-					Tool:            ToolName(tool.Name),
-				})
+				decision, decisionErr := deps.Policy.Decide(ctx, newPolicyInput(
+					securityContext, discoverOperation, ToolName(tool.Name), nil,
+				))
 				if ToolName(tool.Name) == unlockSmartLockTool {
 					auditErr := recordAudit(
 						ctx, deps.Audit, securityContext, discoverOperation, unlockSmartLockTool, decision, "",
@@ -355,19 +360,13 @@ func newMCPServer(deps Dependencies, securityContext SecurityContext) *mcp.Serve
 		Name:        string(coffeeStationStatusTool),
 		Description: "Read the status of the demo coffee station.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input coffeeStationStatusInput) (*mcp.CallToolResult, CoffeeStationStatus, error) {
-		decision, err := deps.Policy.Decide(ctx, PolicyInput{
-			SecurityContext: securityContext,
-			Operation:       executeOperation,
-			Tool:            coffeeStationStatusTool,
-			Arguments:       input,
-		})
+		decision, err := deps.Policy.Decide(ctx, newPolicyInput(
+			securityContext, executeOperation, coffeeStationStatusTool, input,
+		))
 		if err != nil {
 			return nil, CoffeeStationStatus{}, err
 		}
-		result := &mcp.CallToolResult{Meta: mcp.Meta{
-			"decision_id":     decision.DecisionID,
-			"policy_revision": decision.PolicyRevision,
-		}}
+		result := policyResult(decision)
 		if !decision.Allow {
 			result.SetError(errors.New("tool call denied by policy"))
 			return result, CoffeeStationStatus{}, nil
@@ -425,19 +424,13 @@ func newMCPServer(deps Dependencies, securityContext SecurityContext) *mcp.Serve
 			result.SetError(errors.New("invalid availability window"))
 			return result, freebusy.View{}, nil
 		}
-		decision, err := deps.Policy.Decide(ctx, PolicyInput{
-			SecurityContext: securityContext,
-			Operation:       executeOperation,
-			Tool:            findAvailabilityTool,
-			Arguments:       input,
-		})
+		decision, err := deps.Policy.Decide(ctx, newPolicyInput(
+			securityContext, executeOperation, findAvailabilityTool, input,
+		))
 		if err != nil {
 			return nil, freebusy.View{}, err
 		}
-		result := &mcp.CallToolResult{Meta: mcp.Meta{
-			"decision_id":     decision.DecisionID,
-			"policy_revision": decision.PolicyRevision,
-		}}
+		result := policyResult(decision)
 		if !decision.Allow {
 			result.SetError(errors.New("tool call denied by policy"))
 			return result, freebusy.View{}, nil
@@ -597,9 +590,9 @@ func newMCPServer(deps Dependencies, securityContext SecurityContext) *mcp.Serve
 		Description: "Unlock only the fixed simulated front-door lock after exact Owner Approval.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input unlockSmartLockInput) (*mcp.CallToolResult, SmartLockState, error) {
 		arguments := smartlock.Arguments{DeviceID: input.DeviceID}
-		decision, err := deps.Policy.Decide(ctx, PolicyInput{
-			SecurityContext: securityContext, Operation: executeOperation, Tool: unlockSmartLockTool, Arguments: arguments,
-		})
+		decision, err := deps.Policy.Decide(ctx, newPolicyInput(
+			securityContext, executeOperation, unlockSmartLockTool, arguments,
+		))
 		if err != nil {
 			if auditErr := recordAudit(ctx, deps.Audit, securityContext, executeOperation, unlockSmartLockTool, PolicyDecision{DecisionID: "unavailable"}, "", "deny", "policy_unavailable"); auditErr != nil {
 				return nil, SmartLockState{}, errors.Join(err, auditErr)
@@ -712,16 +705,20 @@ func newMCPServer(deps Dependencies, securityContext SecurityContext) *mcp.Serve
 }
 
 func policyResult(decision PolicyDecision) *mcp.CallToolResult {
+	obligations := make([]string, len(decision.Obligations))
+	for index, obligation := range decision.Obligations {
+		obligations[index] = string(obligation)
+	}
 	return &mcp.CallToolResult{Meta: mcp.Meta{
+		"correlation_id":  decision.CorrelationID,
 		"decision_id":     decision.DecisionID,
+		"obligations":     obligations,
 		"policy_revision": decision.PolicyRevision,
 	}}
 }
 
 func authorize(ctx context.Context, policy PolicyClient, securityContext SecurityContext, tool ToolName, arguments any) (*mcp.CallToolResult, bool, error) {
-	decision, err := policy.Decide(ctx, PolicyInput{
-		SecurityContext: securityContext, Operation: executeOperation, Tool: tool, Arguments: arguments,
-	})
+	decision, err := policy.Decide(ctx, newPolicyInput(securityContext, executeOperation, tool, arguments))
 	if err != nil {
 		return nil, false, err
 	}
@@ -731,6 +728,18 @@ func authorize(ctx context.Context, policy PolicyClient, securityContext Securit
 		return result, false, nil
 	}
 	return result, true, nil
+}
+
+var policyCorrelationSequence atomic.Uint64
+
+func newPolicyInput(securityContext SecurityContext, operation PolicyOperation, tool ToolName, arguments any) PolicyInput {
+	return PolicyInput{
+		CorrelationID:   CorrelationID(fmt.Sprintf("policy-%d-%d", time.Now().UnixNano(), policyCorrelationSequence.Add(1))),
+		SecurityContext: securityContext,
+		Operation:       operation,
+		Tool:            tool,
+		Arguments:       arguments,
+	}
 }
 
 func exactBinding(securityContext SecurityContext, operation meeting.Operation) approvalauthority.Binding {
@@ -745,7 +754,7 @@ func recordAudit(ctx context.Context, sink AuditSink, securityContext SecurityCo
 		return errors.New("audit sink is unavailable")
 	}
 	return sink.Record(ctx, AuditRecord{
-		TraceID: traceID, DecisionID: decision.DecisionID, SubjectKind: subjectKind(securityContext.Subject),
+		TraceID: traceID, CorrelationID: decision.CorrelationID, DecisionID: decision.DecisionID, SubjectKind: subjectKind(securityContext.Subject),
 		Actor: securityContext.Actor, Channel: securityContext.Channel, Operation: operation, Tool: tool,
 		Outcome: outcome, Reason: reason,
 	})

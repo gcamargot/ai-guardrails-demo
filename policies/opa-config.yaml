@@ -1,2 +1,28 @@
+services:
+  policy-bundle:
+    url: http://policy-bundle:8091
+
+bundles:
+  agent-tools:
+    service: policy-bundle
+    resource: bundles/agent-tools.tar.gz
+    polling:
+      min_delay_seconds: 1
+      max_delay_seconds: 1
+    signing:
+      keyid: demo-policy-key
+
+keys:
+  demo-policy-key:
+    algorithm: ES256
+    key: |
+      -----BEGIN PUBLIC KEY-----
+      MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEB5gCH6xLLrRgechWwDvrkJX+Sezc
+      pabPB56J6fKKZViCEpZJXz8Iw/6UFoDHMIL5FbRHwsl3d0N/TEFstJTBNg==
+      -----END PUBLIC KEY-----
+
 decision_logs:
+  console: true
+
+status:
   console: true

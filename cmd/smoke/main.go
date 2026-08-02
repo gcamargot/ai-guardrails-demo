@@ -26,6 +26,8 @@ func main() {
 	calendarMetricsEndpoint := environment("CALENDAR_METRICS_URL", "http://127.0.0.1:8083/metrics")
 	smartLockMetricsEndpoint := environment("SMART_LOCK_METRICS_URL", "http://127.0.0.1:8088/metrics")
 	auditRecordsEndpoint := environment("AUDIT_RECORDS_URL", "http://127.0.0.1:8089/records")
+	opaStatusEndpoint := environment("OPA_STATUS_URL", "http://127.0.0.1:8181/v1/status")
+	invalidPolicyUpdateEndpoint := environment("POLICY_INVALID_UPDATE_URL", "http://127.0.0.1:8091/updates/invalid-signature")
 	tokenEndpoint := environment("KEYCLOAK_TOKEN_URL", "http://127.0.0.1:8082/realms/agent-tools/protocol/openid-connect/token")
 	if status := unauthenticatedStatus(ctx, endpoint); status != http.StatusUnauthorized {
 		log.Fatalf("unauthenticated MCP status = %d, want %d", status, http.StatusUnauthorized)
@@ -68,9 +70,10 @@ func main() {
 	outlookMessageID := runOutlookFlow(ctx, tokenEndpoint, telegramGatewayEndpoint, telegramWebhookEndpoint, calendarMetricsEndpoint)
 	proposalID, eventID := runMeetingFlow(ctx, telegramWebhookEndpoint)
 	lockTrace := runSmartLockFlow(ctx, tokenEndpoint, endpoint, telegramGatewayEndpoint, telegramWebhookEndpoint, smartLockMetricsEndpoint, auditRecordsEndpoint)
+	verifyRejectedPolicyUpdate(ctx, opaStatusEndpoint, invalidPolicyUpdateEndpoint, endpoint, codingToken)
 
 	fmt.Printf(
-		"PASS subject=%s actors=%s,%s telegram_decision=%v coding_decision=%v repository=%s available_intervals=%d outlook_message=%s outlook_effect_count=0 proposal=%s event=%s event_count=1 smart_lock_trace=%s unlock_count=1 policy_revision=ticket-07\n",
+		"PASS subject=%s actors=%s,%s telegram_decision=%v coding_decision=%v repository=%s available_intervals=%d outlook_message=%s outlook_effect_count=0 proposal=%s event=%s event_count=1 smart_lock_trace=%s unlock_count=1 policy_revision=ticket-08 invalid_bundle=rejected\n",
 		telegramClaims.Subject,
 		telegramClaims.Actor,
 		codingClaims.Actor,
@@ -370,10 +373,82 @@ func callCoffeeStation(ctx context.Context, endpoint, token string, meta mcp.Met
 	if !ok || output["state"] != "ready" {
 		log.Fatalf("unexpected authenticated result: %#v", result.StructuredContent)
 	}
-	if result.Meta["policy_revision"] != "ticket-07" {
+	if result.Meta["correlation_id"] == nil || result.Meta["correlation_id"] == "" {
+		log.Fatal("Policy Decision is missing correlation_id")
+	}
+	if result.Meta["policy_revision"] != "ticket-08" {
 		log.Fatalf("unexpected policy revision: %v", result.Meta["policy_revision"])
 	}
 	return result.Meta["decision_id"]
+}
+
+func verifyRejectedPolicyUpdate(ctx context.Context, statusEndpoint, updateEndpoint, gatewayEndpoint, token string) {
+	initial := readPolicyBundleStatus(ctx, statusEndpoint)
+	if initial.ActiveRevision != "ticket-08" || initial.Code != "" {
+		log.Fatalf("unexpected initial policy bundle status: %#v", initial)
+	}
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, updateEndpoint, nil)
+	if err != nil {
+		log.Fatalf("create invalid policy update request: %v", err)
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		log.Fatalf("publish invalid policy update: %v", err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		log.Fatalf("publish invalid policy update status = %d", response.StatusCode)
+	}
+
+	deadline := time.Now().Add(8 * time.Second)
+	for {
+		status := readPolicyBundleStatus(ctx, statusEndpoint)
+		if status.ActiveRevision == "ticket-08" && status.Code != "" && status.LastRequest != initial.LastRequest {
+			break
+		}
+		if time.Now().After(deadline) {
+			log.Fatalf("OPA did not reject untrusted bundle while retaining ticket-08: %#v", status)
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	callCoffeeStation(ctx, gatewayEndpoint, token, nil)
+}
+
+type policyBundleStatus struct {
+	ActiveRevision string
+	Code           string
+	LastRequest    string
+}
+
+func readPolicyBundleStatus(ctx context.Context, endpoint string) policyBundleStatus {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		log.Fatalf("create OPA status request: %v", err)
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		log.Fatalf("read OPA status: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		log.Fatalf("OPA status = %d", response.StatusCode)
+	}
+	var document struct {
+		Result struct {
+			Bundles map[string]struct {
+				ActiveRevision string `json:"active_revision"`
+				Code           string `json:"code"`
+				LastRequest    string `json:"last_request"`
+			} `json:"bundles"`
+		} `json:"result"`
+	}
+	decodeJSON(response, &document, "OPA bundle status")
+	status, ok := document.Result.Bundles["agent-tools"]
+	if !ok {
+		log.Fatal("OPA status is missing agent-tools bundle")
+	}
+	return policyBundleStatus(status)
 }
 
 func verifyExternalDiscoveryAndDenial(ctx context.Context, endpoint, token string) {

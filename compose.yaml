@@ -36,6 +36,22 @@ services:
       timeout: 1s
       retries: 15
 
+  policy-bundle:
+    build: .
+    command: /app/policy-bundle-server
+    environment:
+      POLICY_BUNDLE_FILE: /artifacts/agent-tools-bundle.tar.gz
+      POLICY_INVALID_BUNDLE_FILE: /artifacts/invalid-signature-fixture.tar.gz
+    volumes:
+      - ./.artifacts/policy:/artifacts:ro
+    networks:
+      - control
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8091/healthz"]
+      interval: 2s
+      timeout: 1s
+      retries: 15
+
   opa:
     image: openpolicyagent/opa:1.17.0-static
     command:
@@ -43,10 +59,20 @@ services:
       - --server
       - --addr=0.0.0.0:8181
       - --config-file=/config/opa.yaml
-      - /policies/agent_tools.rego
     volumes:
-      - ./policies/agent_tools.rego:/policies/agent_tools.rego:ro
       - ./policies/opa-config.yaml:/config/opa.yaml:ro
+    depends_on:
+      policy-bundle:
+        condition: service_healthy
+    networks:
+      - control
+
+  opa-ready:
+    image: alpine:3.22
+    command: ["sh", "-ec", "until wget -q -O - 'http://opa:8181/health?bundles' >/dev/null; do sleep 1; done"]
+    depends_on:
+      opa:
+        condition: service_started
     networks:
       - control
 
@@ -264,6 +290,8 @@ services:
         condition: service_healthy
       opa:
         condition: service_started
+      opa-ready:
+        condition: service_completed_successfully
       oauth-facade:
         condition: service_healthy
       outlook:
@@ -330,6 +358,8 @@ services:
         condition: service_healthy
       opa:
         condition: service_started
+      opa-ready:
+        condition: service_completed_successfully
       oauth-facade:
         condition: service_healthy
       outlook:
@@ -409,6 +439,8 @@ services:
     command: /app/smoke
     environment:
       AUDIT_RECORDS_URL: http://audit:8089/records
+      OPA_STATUS_URL: http://opa:8181/v1/status
+      POLICY_INVALID_UPDATE_URL: http://policy-bundle:8091/updates/invalid-signature
       CALENDAR_METRICS_URL: http://calendar:8083/metrics
       SMART_LOCK_METRICS_URL: http://smart-lock:8088/metrics
       GATEWAY_MCP_URL: http://gateway:8080/mcp
@@ -425,6 +457,7 @@ services:
       - identity
       - observability
       - audit
+      - control
     profiles:
       - test
 

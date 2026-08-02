@@ -3,8 +3,10 @@ package opaclient_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -15,6 +17,7 @@ import (
 
 func TestGatewayUsesOPADecisionToAllowToolCall(t *testing.T) {
 	t.Parallel()
+	var observedCorrelation gateway.CorrelationID
 
 	policyServer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/v1/data/agent_tools/decision" {
@@ -32,8 +35,12 @@ func TestGatewayUsesOPADecisionToAllowToolCall(t *testing.T) {
 		if document.Input.Tool != "coffee_station.get_status" {
 			t.Errorf("OPA tool = %q, want coffee_station.get_status", document.Input.Tool)
 		}
+		if document.Input.CorrelationID == "" {
+			t.Error("OPA input is missing correlation_id")
+		}
+		observedCorrelation = document.Input.CorrelationID
 		response.Header().Set("Content-Type", "application/json")
-		_, _ = response.Write([]byte(`{"decision_id":"opa-allow","result":{"allow":true,"policy_revision":"ticket-02"}}`))
+		_, _ = fmt.Fprintf(response, `{"decision_id":"opa-allow","result":{"allow":true,"correlation_id":%q,"obligations":["exact_approval"],"policy_revision":"ticket-08"}}`, document.Input.CorrelationID)
 	}))
 	t.Cleanup(policyServer.Close)
 
@@ -73,8 +80,14 @@ func TestGatewayUsesOPADecisionToAllowToolCall(t *testing.T) {
 	if got := result.Meta["decision_id"]; got != "opa-allow" {
 		t.Errorf("decision_id = %v, want opa-allow", got)
 	}
-	if got := result.Meta["policy_revision"]; got != "ticket-02" {
-		t.Errorf("policy_revision = %v, want ticket-02", got)
+	if got := result.Meta["correlation_id"]; got != string(observedCorrelation) {
+		t.Errorf("correlation_id = %v, want %s", got, observedCorrelation)
+	}
+	if got := result.Meta["obligations"]; !reflect.DeepEqual(got, []any{"exact_approval"}) {
+		t.Errorf("obligations = %v, want exact_approval", got)
+	}
+	if got := result.Meta["policy_revision"]; got != "ticket-08" {
+		t.Errorf("policy_revision = %v, want ticket-08", got)
 	}
 }
 

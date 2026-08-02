@@ -2,356 +2,213 @@ package agent_tools_test
 
 import data.agent_tools.decision
 
-test_coding_owner_can_read_only_allowlisted_repository_artifact if {
-	decision == {"allow": true, "policy_revision": "ticket-07", "reason": "owner_coding_repository_read"} with input as {
-		"security_context": {
-			"subject": "owner-subject-id", "actor": "coding-agent", "channel": "streamable-http",
-			"turn_capabilities": ["dev.repository.read"],
-		},
-		"operation": "execute", "tool": "dev.read_repository", "arguments": {"path": "CONTEXT.md"},
-	}
+all_tools := {
+	"calendar.approve_meeting_proposal",
+	"calendar.deny_meeting_proposal",
+	"calendar.find_availability",
+	"calendar.review_meeting_proposal",
+	"calendar.submit_meeting_proposal",
+	"coffee_station.get_status",
+	"dev.read_repository",
+	"outlook.read_message",
+	"outlook.search_messages",
+	"smart_lock.unlock",
 }
 
-test_coding_actor_can_discover_repository_but_not_smart_lock if {
-	repository := decision with input as {
-		"security_context": {
-			"subject": "owner-subject-id", "actor": "coding-agent", "channel": "streamable-http",
-			"turn_capabilities": ["dev.repository.read", "smart_lock.write"],
-		},
-		"operation": "discover", "tool": "dev.read_repository",
+discovered(context) := {tool |
+	tool := all_tools[_]
+	result := decision with input as {
+		"correlation_id": "matrix-discovery",
+		"security_context": context,
+		"operation": "discover",
+		"tool": tool,
+		"arguments": {},
 	}
-	lock := decision with input as {
-		"security_context": {
-			"subject": "owner-subject-id", "actor": "coding-agent", "channel": "streamable-http",
-			"turn_capabilities": ["dev.repository.read", "smart_lock.write"],
-		},
-		"operation": "discover", "tool": "smart_lock.unlock",
-	}
-	repository.allow
-	not lock.allow
+	result.allow
 }
 
-test_client_allowlist_cannot_broaden_coding_authority if {
-	not decision.allow with input as {
-		"security_context": {
-			"subject": "owner-subject-id", "actor": "coding-agent", "channel": "streamable-http",
-			"turn_capabilities": ["dev.repository.read", "smart_lock.write"],
+test_complete_subject_actor_discovery_matrix if {
+	cases := [
+		{
+			"context": {
+				"subject": "owner-subject-id", "actor": "telegram-agent", "channel": "telegram",
+				"turn_capabilities": ["calendar.meeting.approve", "outlook.mail.read", "smart_lock.write"],
+			},
+			"expected": {
+				"calendar.approve_meeting_proposal", "calendar.deny_meeting_proposal",
+				"calendar.review_meeting_proposal", "outlook.read_message",
+				"outlook.search_messages", "smart_lock.unlock",
+			},
 		},
-		"operation": "execute", "tool": "smart_lock.unlock", "arguments": {"device_id": "demo-front-door"},
-	}
-}
-
-test_only_owner_telegram_capability_and_fixed_device_can_unlock if {
-	decision == {"allow": true, "policy_revision": "ticket-07", "reason": "owner_exact_smart_lock"} with input as {
-		"security_context": {
-			"subject": "owner-subject-id", "actor": "telegram-agent", "channel": "telegram",
-			"turn_capabilities": ["smart_lock.write"],
+		{
+			"context": {
+				"subject": "owner-subject-id", "actor": "coding-agent", "channel": "streamable-http",
+				"turn_capabilities": ["coffee_station.read", "dev.repository.read", "smart_lock.write"],
+			},
+			"expected": {"coffee_station.get_status", "dev.read_repository"},
 		},
-		"operation": "execute", "tool": "smart_lock.unlock",
-		"arguments": {"device_id": "demo-front-door"},
-	}
-
-	denied := [
-		{"subject": "external-alice-subject-id", "actor": "telegram-agent", "channel": "telegram", "turn_capabilities": ["smart_lock.write"]},
-		{"subject": "unknown", "actor": "telegram-agent", "channel": "telegram", "turn_capabilities": ["smart_lock.write"]},
-		{"subject": "owner-subject-id", "actor": "coding-agent", "channel": "telegram", "turn_capabilities": ["smart_lock.write"]},
-		{"subject": "owner-subject-id", "actor": "telegram-agent", "channel": "streamable-http", "turn_capabilities": ["smart_lock.write"]},
-		{"subject": "owner-subject-id", "actor": "telegram-agent", "channel": "telegram", "turn_capabilities": []},
+		{
+			"context": {
+				"subject": "external-alice-subject-id", "actor": "telegram-agent", "channel": "telegram",
+				"turn_capabilities": ["calendar.free_busy.read", "calendar.meeting.propose"],
+			},
+			"expected": {"calendar.find_availability", "calendar.submit_meeting_proposal"},
+		},
+		{
+			"context": {
+				"subject": "external-alice-subject-id", "actor": "coding-agent", "channel": "streamable-http",
+				"turn_capabilities": ["calendar.free_busy.read", "dev.repository.read", "smart_lock.write"],
+			},
+			"expected": set(),
+		},
+		{
+			"context": {
+				"subject": "unknown", "actor": "telegram-agent", "channel": "telegram",
+				"turn_capabilities": ["calendar.free_busy.read", "smart_lock.write"],
+			},
+			"expected": set(),
+		},
+		{
+			"context": {
+				"subject": "unknown", "actor": "coding-agent", "channel": "streamable-http",
+				"turn_capabilities": ["dev.repository.read", "smart_lock.write"],
+			},
+			"expected": set(),
+		},
 	]
-	every context in denied {
+
+	every case in cases {
+		discovered(case.context) == case.expected
+	}
+}
+
+test_positive_execution_matrix if {
+	cases := [
+		{
+			"context": {"subject": "owner-subject-id", "actor": "coding-agent", "channel": "streamable-http", "turn_capabilities": ["dev.repository.read"]},
+			"tool": "dev.read_repository", "arguments": {"path": "CONTEXT.md"}, "obligations": [],
+		},
+		{
+			"context": {"subject": "owner-subject-id", "actor": "telegram-agent", "channel": "telegram", "turn_capabilities": ["outlook.mail.read"]},
+			"tool": "outlook.read_message", "arguments": {"message_id": "demo-injection-message"}, "obligations": [],
+		},
+		{
+			"context": {"subject": "owner-subject-id", "actor": "telegram-agent", "channel": "telegram", "turn_capabilities": ["outlook.mail.read"]},
+			"tool": "outlook.search_messages", "arguments": {"query": "guardrails", "limit": 5}, "obligations": [],
+		},
+		{
+			"context": {"subject": "owner-subject-id", "actor": "coding-agent", "channel": "streamable-http", "turn_capabilities": ["coffee_station.read"]},
+			"tool": "coffee_station.get_status", "arguments": {"station_id": "demo-station"}, "obligations": [],
+		},
+		{
+			"context": {"subject": "external-alice-subject-id", "actor": "telegram-agent", "channel": "telegram", "turn_capabilities": ["calendar.free_busy.read"]},
+			"tool": "calendar.find_availability", "arguments": {"start": "2026-08-03T09:00:00Z", "end": "2026-08-03T12:00:00Z"}, "obligations": [],
+		},
+		{
+			"context": {"subject": "external-alice-subject-id", "actor": "telegram-agent", "channel": "telegram", "turn_capabilities": ["calendar.meeting.propose"]},
+			"tool": "calendar.submit_meeting_proposal", "arguments": {"start": "2026-08-03T13:00:00Z", "end": "2026-08-03T13:30:00Z", "reason": "Guardrails sync", "contact": "alice@example.invalid"}, "obligations": [],
+		},
+		{
+			"context": {"subject": "owner-subject-id", "actor": "telegram-agent", "channel": "telegram", "turn_capabilities": ["calendar.meeting.approve"]},
+			"tool": "calendar.review_meeting_proposal", "arguments": {"proposal_id": "proposal-1"}, "obligations": [],
+		},
+		{
+			"context": {"subject": "owner-subject-id", "actor": "telegram-agent", "channel": "telegram", "turn_capabilities": ["calendar.meeting.approve"]},
+			"tool": "calendar.approve_meeting_proposal", "arguments": {"proposal_id": "proposal-1"}, "obligations": ["exact_approval"],
+		},
+		{
+			"context": {"subject": "owner-subject-id", "actor": "telegram-agent", "channel": "telegram", "turn_capabilities": ["calendar.meeting.approve"]},
+			"tool": "calendar.deny_meeting_proposal", "arguments": {"proposal_id": "proposal-1"}, "obligations": ["exact_approval"],
+		},
+		{
+			"context": {"subject": "owner-subject-id", "actor": "telegram-agent", "channel": "telegram", "turn_capabilities": ["smart_lock.write"]},
+			"tool": "smart_lock.unlock", "arguments": {"device_id": "demo-front-door"}, "obligations": ["exact_approval"],
+		},
+	]
+
+	every case in cases {
+		result := decision with input as {
+			"correlation_id": "matrix-execution",
+			"security_context": case.context,
+			"operation": "execute",
+			"tool": case.tool,
+			"arguments": case.arguments,
+		}
+			with time.now_ns as time.parse_rfc3339_ns("2026-08-01T12:00:00Z")
+		result.allow
+		result.correlation_id == "matrix-execution"
+		result.obligations == case.obligations
+		result.policy_revision == "ticket-08"
+	}
+}
+
+test_turn_capabilities_never_expand_authority if {
+	cases := [
+		{
+			"context": {"subject": "owner-subject-id", "actor": "coding-agent", "channel": "streamable-http", "turn_capabilities": ["smart_lock.write"]},
+			"tool": "smart_lock.unlock", "arguments": {"device_id": "demo-front-door"},
+		},
+		{
+			"context": {"subject": "external-alice-subject-id", "actor": "telegram-agent", "channel": "telegram", "turn_capabilities": ["outlook.mail.read"]},
+			"tool": "outlook.read_message", "arguments": {"message_id": "demo-injection-message"},
+		},
+		{
+			"context": {"subject": "owner-subject-id", "actor": "telegram-agent", "channel": "telegram", "turn_capabilities": []},
+			"tool": "smart_lock.unlock", "arguments": {"device_id": "demo-front-door"},
+		},
+	]
+
+	every case in cases {
+		result := decision with input as {
+			"correlation_id": "matrix-deny-capability",
+			"security_context": case.context,
+			"operation": "execute",
+			"tool": case.tool,
+			"arguments": case.arguments,
+		}
+		not result.allow
+		result.correlation_id == "matrix-deny-capability"
+		result.obligations == []
+		result.policy_revision == "ticket-08"
+	}
+}
+
+test_argument_constraints_fail_closed if {
+	cases := [
+		{"tool": "dev.read_repository", "arguments": {"path": ".ssh/id_ed25519"}},
+		{"tool": "coffee_station.get_status", "arguments": {"station_id": "real-station"}},
+		{"tool": "outlook.read_message", "arguments": {"message_id": "other-message"}},
+		{"tool": "outlook.search_messages", "arguments": {"query": "guardrails", "limit": 6}},
+		{"tool": "smart_lock.unlock", "arguments": {"device_id": "garage-door"}},
+		{"tool": "calendar.submit_meeting_proposal", "arguments": {"start": "2026-08-03T13:00:00Z", "end": "2026-08-03T13:30:00Z", "reason": "", "contact": "alice@example.invalid"}},
+		{"tool": "calendar.approve_meeting_proposal", "arguments": {"proposal_id": ""}},
+	]
+	contexts := {
+		"dev.read_repository": {"subject": "owner-subject-id", "actor": "coding-agent", "channel": "streamable-http", "turn_capabilities": ["dev.repository.read"]},
+		"coffee_station.get_status": {"subject": "owner-subject-id", "actor": "coding-agent", "channel": "streamable-http", "turn_capabilities": ["coffee_station.read"]},
+		"outlook.read_message": {"subject": "owner-subject-id", "actor": "telegram-agent", "channel": "telegram", "turn_capabilities": ["outlook.mail.read"]},
+		"outlook.search_messages": {"subject": "owner-subject-id", "actor": "telegram-agent", "channel": "telegram", "turn_capabilities": ["outlook.mail.read"]},
+		"smart_lock.unlock": {"subject": "owner-subject-id", "actor": "telegram-agent", "channel": "telegram", "turn_capabilities": ["smart_lock.write"]},
+		"calendar.submit_meeting_proposal": {"subject": "external-alice-subject-id", "actor": "telegram-agent", "channel": "telegram", "turn_capabilities": ["calendar.meeting.propose"]},
+		"calendar.approve_meeting_proposal": {"subject": "owner-subject-id", "actor": "telegram-agent", "channel": "telegram", "turn_capabilities": ["calendar.meeting.approve"]},
+	}
+
+	every case in cases {
 		not decision.allow with input as {
-			"security_context": context, "operation": "execute", "tool": "smart_lock.unlock",
-			"arguments": {"device_id": "demo-front-door"},
+			"correlation_id": "matrix-deny-arguments",
+			"security_context": contexts[case.tool],
+			"operation": "execute",
+			"tool": case.tool,
+			"arguments": case.arguments,
 		}
 	}
-	not decision.allow with input as {
-		"security_context": {
-			"subject": "owner-subject-id", "actor": "telegram-agent", "channel": "telegram",
-			"turn_capabilities": ["smart_lock.write"],
-		},
-		"operation": "execute", "tool": "smart_lock.unlock",
-		"arguments": {"device_id": "garage-door"},
-	}
-}
-
-test_smart_lock_discovery_is_filtered_by_trusted_context if {
-	allowed := decision with input as {
-		"security_context": {
-			"subject": "owner-subject-id", "actor": "telegram-agent", "channel": "telegram",
-			"turn_capabilities": ["smart_lock.write"],
-		},
-		"operation": "discover", "tool": "smart_lock.unlock",
-	}
-	allowed.allow
-	not decision.allow with input as {
-		"security_context": {
-			"subject": "external-alice-subject-id", "actor": "telegram-agent", "channel": "telegram",
-			"turn_capabilities": ["smart_lock.write"],
-		},
-		"operation": "discover", "tool": "smart_lock.unlock",
-	}
-}
-
-test_only_owner_telegram_with_explicit_capability_can_read_outlook if {
-	read := decision with input as {
-		"security_context": {
-			"subject": "owner-subject-id", "actor": "telegram-agent", "channel": "telegram",
-			"turn_capabilities": ["outlook.mail.read"],
-		},
-		"operation": "execute", "tool": "outlook.read_message",
-		"arguments": {"message_id": "demo-injection-message"},
-	}
-	read.allow
 
 	not decision.allow with input as {
-		"security_context": {
-			"subject": "external-alice-subject-id", "actor": "telegram-agent", "channel": "telegram",
-			"turn_capabilities": ["outlook.mail.read"],
-		},
-		"operation": "execute", "tool": "outlook.read_message",
-		"arguments": {"message_id": "demo-injection-message"},
-	}
-
-	not decision.allow with input as {
-		"security_context": {
-			"subject": "owner-subject-id", "actor": "telegram-agent", "channel": "telegram",
-			"turn_capabilities": ["calendar.free_busy.read"],
-		},
-		"operation": "execute", "tool": "outlook.read_message",
-		"arguments": {"message_id": "demo-injection-message"},
-	}
-}
-
-test_owner_can_discover_bounded_outlook_read_tools if {
-	search := decision with input as {
-		"security_context": {
-			"subject": "owner-subject-id", "actor": "telegram-agent", "channel": "telegram",
-			"turn_capabilities": ["outlook.mail.read"],
-		},
-		"operation": "discover", "tool": "outlook.search_messages",
-	}
-	search.allow
-	read := decision with input as {
-		"security_context": {
-			"subject": "owner-subject-id", "actor": "telegram-agent", "channel": "telegram",
-			"turn_capabilities": ["outlook.mail.read"],
-		},
-		"operation": "discover", "tool": "outlook.read_message",
-	}
-	read.allow
-}
-
-test_external_subject_can_submit_proposal_but_not_approve if {
-	proposal := decision with input as {
-		"security_context": {
-			"subject": "external-alice-subject-id", "actor": "telegram-agent", "channel": "telegram",
-			"turn_capabilities": ["calendar.meeting.propose"],
-		},
-		"operation": "execute", "tool": "calendar.submit_meeting_proposal",
-		"arguments": {"start": "2026-08-03T13:00:00Z", "end": "2026-08-03T13:30:00Z"},
-	}
-	proposal.allow
-	not decision.allow with input as {
-		"security_context": {
-			"subject": "external-alice-subject-id", "actor": "telegram-agent", "channel": "telegram",
-			"turn_capabilities": ["calendar.meeting.approve"],
-		},
-		"operation": "execute", "tool": "calendar.approve_meeting_proposal",
-		"arguments": {"proposal_id": "proposal-1"},
-	}
-}
-
-test_owner_can_review_and_approve_exact_proposal if {
-	review := decision with input as {
-		"security_context": {
-			"subject": "owner-subject-id", "actor": "telegram-agent", "channel": "telegram",
-			"turn_capabilities": ["calendar.meeting.approve"],
-		},
-		"operation": "execute", "tool": "calendar.review_meeting_proposal",
-		"arguments": {"proposal_id": "proposal-1"},
-	}
-	review.allow
-	approve := decision with input as {
-		"security_context": {
-			"subject": "owner-subject-id", "actor": "telegram-agent", "channel": "telegram",
-			"turn_capabilities": ["calendar.meeting.approve"],
-		},
-		"operation": "execute", "tool": "calendar.approve_meeting_proposal",
-		"arguments": {"proposal_id": "proposal-1"},
-	}
-	approve.allow
-}
-
-test_owner_can_read_demo_station if {
-	decision == {"allow": true, "policy_revision": "ticket-07", "reason": "owner_demo_station"} with input as {
-		"security_context": {
-			"subject": "owner-subject-id",
-			"actor": "telegram-agent",
-			"channel": "streamable-http",
-			"turn_capabilities": ["coffee_station.read"],
-		},
-		"operation": "execute",
-		"tool": "coffee_station.get_status",
-		"arguments": {"station_id": "demo-station"},
-	}
-}
-
-test_coding_agent_can_read_for_same_owner if {
-	decision == {"allow": true, "policy_revision": "ticket-07", "reason": "owner_demo_station"} with input as {
-		"security_context": {
-			"subject": "owner-subject-id",
-			"actor": "coding-agent",
-			"channel": "streamable-http",
-			"turn_capabilities": ["coffee_station.read"],
-		},
-		"operation": "execute",
-		"tool": "coffee_station.get_status",
-		"arguments": {"station_id": "demo-station"},
-	}
-}
-
-test_external_subject_is_denied if {
-	decision == {"allow": false, "policy_revision": "ticket-07", "reason": "default_deny"} with input as {
-		"security_context": {
-			"subject": "external",
-			"actor": "telegram-agent",
-			"channel": "streamable-http",
-			"turn_capabilities": ["coffee_station.read"],
-		},
-		"operation": "execute",
-		"tool": "coffee_station.get_status",
-		"arguments": {"station_id": "demo-station"},
-	}
-}
-
-test_other_station_is_denied if {
-	decision == {"allow": false, "policy_revision": "ticket-07", "reason": "default_deny"} with input as {
-		"security_context": {
-			"subject": "owner-subject-id",
-			"actor": "telegram-agent",
-			"channel": "streamable-http",
-			"turn_capabilities": ["coffee_station.read"],
-		},
-		"operation": "execute",
-		"tool": "coffee_station.get_status",
-		"arguments": {"station_id": "real-station"},
-	}
-}
-
-test_owner_can_discover_tool if {
-	decision == {"allow": true, "policy_revision": "ticket-07", "reason": "owner_tool_discovery"} with input as {
-		"security_context": {
-			"subject": "owner-subject-id",
-			"actor": "telegram-agent",
-			"channel": "streamable-http",
-			"turn_capabilities": ["coffee_station.read"],
-		},
-		"operation": "discover",
-		"tool": "coffee_station.get_status",
-	}
-}
-
-test_external_subject_cannot_discover_tool if {
-	not decision.allow with input as {
-		"security_context": {
-			"subject": "external",
-			"actor": "telegram-agent",
-			"channel": "streamable-http",
-			"turn_capabilities": ["coffee_station.read"],
-		},
-		"operation": "discover",
-		"tool": "coffee_station.get_status",
-	}
-}
-
-test_external_subject_can_find_availability_in_working_window if {
-	decision == {"allow": true, "policy_revision": "ticket-07", "reason": "external_free_busy"} with input as {
-		"security_context": {
-			"subject": "external-alice-subject-id",
-			"actor": "telegram-agent",
-			"channel": "telegram",
-			"turn_capabilities": ["calendar.free_busy.read"],
-		},
+		"correlation_id": "matrix-deny-window",
+		"security_context": {"subject": "external-alice-subject-id", "actor": "telegram-agent", "channel": "telegram", "turn_capabilities": ["calendar.free_busy.read"]},
 		"operation": "execute",
 		"tool": "calendar.find_availability",
-		"arguments": {
-			"start": "2026-08-03T09:00:00Z",
-			"end": "2026-08-03T12:00:00Z",
-		},
-	} with time.now_ns as time.parse_rfc3339_ns("2026-08-01T12:00:00Z")
-}
-
-test_external_subject_is_denied_outside_future_window if {
-	not decision.allow with input as {
-		"security_context": {
-			"subject": "external-alice-subject-id",
-			"actor": "telegram-agent",
-			"channel": "telegram",
-			"turn_capabilities": ["calendar.free_busy.read"],
-		},
-		"operation": "execute",
-		"tool": "calendar.find_availability",
-		"arguments": {
-			"start": "2026-08-24T09:00:00Z",
-			"end": "2026-08-24T12:00:00Z",
-		},
-	} with time.now_ns as time.parse_rfc3339_ns("2026-08-01T12:00:00Z")
-}
-
-test_external_subject_can_discover_only_availability if {
-	decision == {"allow": true, "policy_revision": "ticket-07", "reason": "external_availability_discovery"} with input as {
-		"security_context": {
-			"subject": "external-alice-subject-id",
-			"actor": "telegram-agent",
-			"channel": "telegram",
-			"turn_capabilities": ["calendar.free_busy.read"],
-		},
-		"operation": "discover",
-		"tool": "calendar.find_availability",
+		"arguments": {"start": "2026-08-24T09:00:00Z", "end": "2026-08-24T12:00:00Z"},
 	}
-
-	not decision.allow with input as {
-		"security_context": {
-			"subject": "external-alice-subject-id",
-			"actor": "telegram-agent",
-			"channel": "telegram",
-			"turn_capabilities": ["calendar.free_busy.read"],
-		},
-		"operation": "discover",
-		"tool": "coffee_station.get_status",
-	}
-}
-
-test_external_subject_is_denied_outside_working_hours if {
-	not decision.allow with input as {
-		"security_context": {
-			"subject": "external-alice-subject-id",
-			"actor": "telegram-agent",
-			"channel": "telegram",
-			"turn_capabilities": ["calendar.free_busy.read"],
-		},
-		"operation": "execute",
-		"tool": "calendar.find_availability",
-		"arguments": {
-			"start": "2026-08-03T08:00:00Z",
-			"end": "2026-08-03T10:00:00Z",
-		},
-	} with time.now_ns as time.parse_rfc3339_ns("2026-08-01T12:00:00Z")
-}
-
-test_external_subject_is_denied_after_working_hours_end if {
-	not decision.allow with input as {
-		"security_context": {
-			"subject": "external-alice-subject-id",
-			"actor": "telegram-agent",
-			"channel": "telegram",
-			"turn_capabilities": ["calendar.free_busy.read"],
-		},
-		"operation": "execute",
-		"tool": "calendar.find_availability",
-		"arguments": {
-			"start": "2026-08-03T16:00:00Z",
-			"end": "2026-08-03T17:30:00Z",
-		},
-	} with time.now_ns as time.parse_rfc3339_ns("2026-08-01T12:00:00Z")
+		with time.now_ns as time.parse_rfc3339_ns("2026-08-01T12:00:00Z")
 }

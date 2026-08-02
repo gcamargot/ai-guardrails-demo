@@ -25,3 +25,8 @@
 !.scratch/
 !.scratch/agent-tool-guardrails/
 !.scratch/agent-tool-guardrails/**
+!.artifacts/
+!.artifacts/policy/
+!.artifacts/policy/.gitkeep
+!testdata/
+!testdata/**

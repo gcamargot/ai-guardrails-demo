@@ -6,6 +6,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+./scripts/policy-ci.sh
 docker compose up --build --wait gateway telegram-adapter
 docker compose --profile test run --build --rm smoke
 
