@@ -4,7 +4,7 @@
 
 **Blocked by:** 06 — Unlock the simulated smart lock only from the authorized Telegram turn.
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
 - [x] Codex authenticates as the coding Actor for the Owner and successfully uses a narrow development Tool.
 - [x] Codex marks the gateway required and applies a local Tool allowlist and approval mode.
